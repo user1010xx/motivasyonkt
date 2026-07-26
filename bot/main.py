@@ -255,35 +255,84 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if len(caption) > 1000:
             caption = caption[:997] + "…"
 
+        # PNG bytes — her gruba ayrı buffer (Telegram stream tüketmesin)
+        photo_bytes = image if isinstance(image, (bytes, bytearray)) else bytes(image)
+
         for chat_id in settings.telegram_chat_ids:
             try:
+                # Supergroup id çoğu zaman -100... ile başlar
+                cid = str(chat_id).strip()
                 await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=image,
+                    chat_id=cid,
+                    photo=photo_bytes,
                     caption=caption,
                     parse_mode=ParseMode.HTML,
+                    read_timeout=120,
+                    write_timeout=120,
+                    connect_timeout=60,
                 )
                 ok += 1
             except Exception as exc:
                 fail += 1
-                errors.append(f"{chat_id}: {exc}")
-                logger.exception(" /gonder grup gönderimi fail: %s", chat_id)
+                err = str(exc)
+                hint = ""
+                if "timed out" in err.lower() or "timeout" in err.lower():
+                    hint = (
+                        " (ağ/timeout — bot grupta mı? id doğru mu? "
+                        "Supergroup ise genelde -100… formatı)"
+                    )
+                if "chat not found" in err.lower() or "forbidden" in err.lower():
+                    hint = " (botu gruba ekle / id’yi kontrol et; -100… olabilir)"
+                # Yanlış id ipucu: -5... şeklinde ama -100 değil
+                if cid.startswith("-") and not cid.startswith("-100") and len(cid) > 10:
+                    hint += f" | Denenebilir: -100{cid.lstrip('-')}"
+                errors.append(f"{cid}: {err}{hint}")
+                logger.exception("/gonder grup gönderimi fail: %s", chat_id)
 
         call = board.call_leader
         talk = board.talk_leader
+
+        if ok and not fail:
+            head = "✅ <b>Canlı zirve gruba gönderildi</b>"
+        elif ok and fail:
+            head = "⚠️ <b>Kısmen gönderildi</b>"
+        else:
+            head = "❌ <b>Gruba gönderilemedi</b> (kart üretildi)"
+
         summary = (
-            f"✅ <b>Canlı zirve gönderildi</b>\n"
+            f"{head}\n"
             f"⏱ Dilim: <b>{board.window_label}</b>\n"
             f"📤 Grup: {ok} ok"
             + (f", {fail} hata" if fail else "")
             + "\n\n"
         )
+        if not call and not talk:
+            summary += (
+                "📭 Bu dilimde skor yok "
+                "(gece/hafta sonu normal olabilir).\n"
+                "Mesai saatlerinde veya <code>/gonder</code> gündüz dene.\n\n"
+            )
         if call:
             summary += f"📞 Çağrı: <b>{call.name}</b> ({call.call_count})\n"
         if talk:
             summary += f"🎧 Süre: <b>{talk.name}</b> ({talk.talk_label})\n"
         if errors:
-            summary += "\n<code>" + "\n".join(errors)[:500] + "</code>"
+            summary += "\n<code>" + "\n".join(errors)[:700] + "</code>"
+
+        # Grup fail ise özelde önizleme gönder (sen gör)
+        if fail and update.effective_chat:
+            try:
+                await context.bot.send_photo(
+                    chat_id=update.effective_chat.id,
+                    photo=photo_bytes,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+                summary += "\n\n📎 Önizleme özel sohbete de iletildi."
+            except Exception:
+                logger.exception("/gonder private preview fail")
 
         await update.effective_message.reply_html(summary)
     except Exception as exc:
