@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from bot.config import Settings, load_settings
 from bot.dates import DateParseError, parse_day_arg
+from bot.gonder_args import parse_gonder_args
 from bot.models import Period
 from bot.service import MotivationService
 from bot.toniva_client import TonivaClient
@@ -130,14 +131,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Merhaba! 🎯 Toniva motivasyon botu hazır.\n\n"
         f"Komutlar ({where}):\n"
-        "/gonder — canlı zirve (00:00–şimdi) → gruba görsel+metin\n"
-        "/sabah — 00:00–12:00\n"
-        "/oglen — 00:00–16:00\n"
-        "/aksam — 00:00–23:59\n"
-        "/sabah dün  ·  /sabah 26.07.2026\n"
+        "/gonder — canlı (bugün 00:00–şimdi) → gruba\n"
+        "/gonder 26.07.2026 sabah\n"
+        "/gonder 26.07.2026 oglen\n"
+        "/gonder 26.07.2026 aksam\n"
+        "/gonder dün aksam\n"
+        "/sabah · /oglen · /aksam  (dilimler: 12:00 / 16:00 / 18:10)\n"
+        "/sabah 26.07.2026 · /aksam dün\n"
         "/debug · /durum · /test\n\n"
-        "• /gonder: env'deki TELEGRAM_CHAT_ID(S) gruplarına gönderir.\n"
-        "• Özelden sadece yetkili kullanıcıya yanıt verir."
+        "• /gonder → TELEGRAM_CHAT_ID(S) gruplarına gider.\n"
+        "• Akşam dilimi varsayılan: 00:00–18:10 (CUTOFF_AKSAM)."
     )
 
 
@@ -158,9 +161,8 @@ async def cmd_durum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Toniva key: <b>{'var' if settings.has_toniva else 'yok'}</b>\n"
         f"• Zamanlayıcı: <b>{'açık' if settings.enable_schedule else 'kapalı'}</b>\n"
         f"• TZ: {settings.timezone}\n"
-        f"• Sabah: {settings.schedule_sabah}\n"
-        f"• Öğlen: {settings.schedule_oglen}\n"
-        f"• Akşam: {settings.schedule_aksam}\n"
+        f"• Gönderim: {settings.schedule_sabah} / {settings.schedule_oglen} / {settings.schedule_aksam}\n"
+        f"• Dilim (veri): {settings.cutoff_sabah} / {settings.cutoff_oglen} / {settings.cutoff_aksam}\n"
     )
     await update.effective_message.reply_html(text)
 
@@ -217,9 +219,13 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Canlı dilim (00:00–şimdi) kral/kraliçe kartını env gruplarına gönder.
+    """Gruba zirve gönder.
 
-    Sadece admin; tercihen özel sohbetten kullanılır.
+    /gonder                         → bugün 00:00–şimdi (canlı)
+    /gonder 26.07.2026 sabah        → o gün 00:00–12:00
+    /gonder 26.07.2026 oglen
+    /gonder 26.07.2026 aksam        → o gün 00:00–18:10 (tam akşam dilimi)
+    /gonder dün aksam
     """
     settings: Settings = context.application.bot_data["settings"]
     if not update.effective_message or not update.effective_chat:
@@ -234,33 +240,41 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    # Opsiyonel: /gonder burada → sadece bu sohbete de kopya
-    # Varsayılan: sadece env grupları
+    try:
+        req = parse_gonder_args(context.args, timezone=settings.timezone)
+    except DateParseError as exc:
+        await update.effective_message.reply_text(
+            f"{exc}\n\n"
+            "Örnekler:\n"
+            "/gonder\n"
+            "/gonder 26.07.2026 sabah\n"
+            "/gonder 26.07.2026 oglen\n"
+            "/gonder 26.07.2026 aksam\n"
+            "/gonder dün aksam"
+        )
+        return
+
     status = await update.effective_message.reply_text(
-        "⏳ Canlı zirve hazırlanıyor (bugün 00:00 → şimdi)…"
+        f"⏳ Gruba hazırlanıyor…\n{req.label}"
     )
 
-    from bot.models import period_for_clock
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    now = datetime.now(ZoneInfo(settings.timezone))
-    style = period_for_clock(now)
     ok, fail = 0, 0
     errors: list[str] = []
 
     try:
         service: MotivationService = context.application.bot_data["service"]
-        board, caption, image = await service.build(style, until_now=True)
+        board, caption, image = await service.build(
+            req.period,
+            day=req.day,
+            until_now=req.until_now,
+        )
         if len(caption) > 1000:
             caption = caption[:997] + "…"
 
-        # PNG bytes — her gruba ayrı buffer (Telegram stream tüketmesin)
         photo_bytes = image if isinstance(image, (bytes, bytearray)) else bytes(image)
 
         for chat_id in settings.telegram_chat_ids:
             try:
-                # Supergroup id çoğu zaman -100... ile başlar
                 cid = str(chat_id).strip()
                 await context.bot.send_photo(
                     chat_id=cid,
@@ -277,23 +291,19 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 err = str(exc)
                 hint = ""
                 if "timed out" in err.lower() or "timeout" in err.lower():
-                    hint = (
-                        " (ağ/timeout — bot grupta mı? id doğru mu? "
-                        "Supergroup ise genelde -100… formatı)"
-                    )
+                    hint = " (timeout — bot grupta mı? id -100… mi?)"
                 if "chat not found" in err.lower() or "forbidden" in err.lower():
-                    hint = " (botu gruba ekle / id’yi kontrol et; -100… olabilir)"
-                # Yanlış id ipucu: -5... şeklinde ama -100 değil
+                    hint = " (botu gruba ekle / id kontrol)"
                 if cid.startswith("-") and not cid.startswith("-100") and len(cid) > 10:
                     hint += f" | Denenebilir: -100{cid.lstrip('-')}"
                 errors.append(f"{cid}: {err}{hint}")
-                logger.exception("/gonder grup gönderimi fail: %s", chat_id)
+                logger.exception("/gonder grup fail: %s", chat_id)
 
         call = board.call_leader
         talk = board.talk_leader
 
         if ok and not fail:
-            head = "✅ <b>Canlı zirve gruba gönderildi</b>"
+            head = "✅ <b>Gruba gönderildi</b>"
         elif ok and fail:
             head = "⚠️ <b>Kısmen gönderildi</b>"
         else:
@@ -301,17 +311,14 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         summary = (
             f"{head}\n"
+            f"📋 {req.label}\n"
             f"⏱ Dilim: <b>{board.window_label}</b>\n"
             f"📤 Grup: {ok} ok"
             + (f", {fail} hata" if fail else "")
             + "\n\n"
         )
         if not call and not talk:
-            summary += (
-                "📭 Bu dilimde skor yok "
-                "(gece/hafta sonu normal olabilir).\n"
-                "Mesai saatlerinde veya <code>/gonder</code> gündüz dene.\n\n"
-            )
+            summary += "📭 Bu dilimde skor yok.\n\n"
         if call:
             summary += f"📞 Çağrı: <b>{call.name}</b> ({call.call_count})\n"
         if talk:
@@ -319,7 +326,6 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         if errors:
             summary += "\n<code>" + "\n".join(errors)[:700] + "</code>"
 
-        # Grup fail ise özelde önizleme gönder (sen gör)
         if fail and update.effective_chat:
             try:
                 await context.bot.send_photo(
@@ -330,7 +336,7 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                     read_timeout=120,
                     write_timeout=120,
                 )
-                summary += "\n\n📎 Önizleme özel sohbete de iletildi."
+                summary += "\n\n📎 Önizleme özel sohbete iletildi."
             except Exception:
                 logger.exception("/gonder private preview fail")
 
@@ -339,7 +345,7 @@ async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         logger.exception("/gonder hata: %s", exc)
         detail = str(exc).replace("<", "&lt;").replace(">", "&gt;")
         await update.effective_message.reply_html(
-            f"⚠️ Canlı zirve üretilemedi.\n<code>{detail[:800]}</code>"
+            f"⚠️ Gönderim üretilemedi.\n<code>{detail[:800]}</code>"
         )
     finally:
         try:

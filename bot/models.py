@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from enum import Enum
 
+from bot.cutoffs import get_cutoff, window_label_for
+
 
 class Period(str, Enum):
     SABAH = "sabah"
@@ -28,32 +30,23 @@ class Period(str, Enum):
 
     @property
     def cutoff(self) -> time:
-        """Gün başından (00:00) bu saate kadar olan veriler alınır (dahil değil: exact cutoff = bitiş).
+        """00:00 → cutoff (env: CUTOFF_SABAH / OGLEN / AKSAM).
 
-        /sabah  → 00:00–12:00
-        /oglen  → 00:00–16:00
-        /aksam  → 00:00–23:59:59 (tüm gün)
+        Varsayılan: sabah 12:00, öğlen 16:00, akşam 18:10
         """
-        return {
-            Period.SABAH: time(12, 0, 0),
-            Period.OGLEN: time(16, 0, 0),
-            Period.AKSAM: time(23, 59, 59),
-        }[self]
+        return get_cutoff(self.value)
 
     @property
     def window_label(self) -> str:
-        end = self.cutoff
-        if end.hour == 23 and end.minute == 59:
-            return "00:00 – 23:59"
-        return f"00:00 – {end.strftime('%H:%M')}"
+        return window_label_for(self.value)
 
 
 def period_for_clock(now: datetime) -> Period:
     """Saate göre stil/dilim ailesi (canlı gönderim için)."""
     t = now.time()
-    if t < time(12, 0):
+    if t < get_cutoff("sabah"):
         return Period.SABAH
-    if t < time(16, 0):
+    if t < get_cutoff("oglen"):
         return Period.OGLEN
     return Period.AKSAM
 

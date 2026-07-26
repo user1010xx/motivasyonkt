@@ -24,13 +24,32 @@ from bot.toniva_client import (
 
 
 def test_dates() -> None:
+    from datetime import time as dtime
+
+    from bot.cutoffs import configure_cutoffs, get_cutoff
     from bot.dates import parse_day_arg, today_in_tz
+    from bot.gonder_args import parse_gonder_args
+    from bot.models import Period
 
     today = today_in_tz("Europe/Istanbul")
     assert parse_day_arg([], timezone="Europe/Istanbul") == today
     assert parse_day_arg(["dün"], timezone="Europe/Istanbul") == today - timedelta(days=1)
     assert parse_day_arg(["26.07.2026"], timezone="Europe/Istanbul") == date(2026, 7, 26)
-    print("OK dates")
+
+    configure_cutoffs(sabah="12:00", oglen="16:00", aksam="18:10")
+    assert get_cutoff("aksam") == dtime(18, 10)
+    assert Period.AKSAM.cutoff == dtime(18, 10)
+    assert "18:10" in Period.AKSAM.window_label
+
+    r = parse_gonder_args(["26.07.2026", "aksam"], timezone="Europe/Istanbul")
+    assert r.day == date(2026, 7, 26) and r.period == Period.AKSAM and not r.until_now
+
+    r2 = parse_gonder_args(["26.07.2026", "öğlen"], timezone="Europe/Istanbul")
+    assert r2.period == Period.OGLEN
+
+    r3 = parse_gonder_args([], timezone="Europe/Istanbul")
+    assert r3.until_now is True
+    print("OK dates + gonder args + aksam 18:10")
 
 
 def test_gender() -> None:

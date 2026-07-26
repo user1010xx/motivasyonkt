@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from bot.cutoffs import configure_cutoffs
+
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
@@ -53,6 +55,10 @@ class Settings:
     schedule_sabah: str
     schedule_oglen: str
     schedule_aksam: str
+    # Veri dilimi bitiş saatleri (gönderim saatinden ayrı)
+    cutoff_sabah: str
+    cutoff_oglen: str
+    cutoff_aksam: str
     enable_schedule: bool
     mock_mode: bool
 
@@ -95,6 +101,12 @@ def load_settings() -> Settings:
         if single:
             chat_ids = [single]
 
+    cutoff_sabah = os.getenv("CUTOFF_SABAH", "12:00").strip() or "12:00"
+    cutoff_oglen = os.getenv("CUTOFF_OGLEN", "16:00").strip() or "16:00"
+    # Akşam veri dilimi varsayılan 18:10 (SCHEDULE_AKSAM gönderim saatidir)
+    cutoff_aksam = os.getenv("CUTOFF_AKSAM", "18:10").strip() or "18:10"
+    configure_cutoffs(sabah=cutoff_sabah, oglen=cutoff_oglen, aksam=cutoff_aksam)
+
     return Settings(
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_ids=chat_ids,
@@ -106,7 +118,10 @@ def load_settings() -> Settings:
         timezone=os.getenv("TIMEZONE", "Europe/Istanbul").strip() or "Europe/Istanbul",
         schedule_sabah=os.getenv("SCHEDULE_SABAH", "09:00").strip() or "09:00",
         schedule_oglen=os.getenv("SCHEDULE_OGLEN", "13:00").strip() or "13:00",
-        schedule_aksam=os.getenv("SCHEDULE_AKSAM", "18:00").strip() or "18:00",
+        schedule_aksam=os.getenv("SCHEDULE_AKSAM", "18:10").strip() or "18:10",
+        cutoff_sabah=cutoff_sabah,
+        cutoff_oglen=cutoff_oglen,
+        cutoff_aksam=cutoff_aksam,
         enable_schedule=_bool(os.getenv("ENABLE_SCHEDULE"), True),
         mock_mode=_bool(os.getenv("MOCK_MODE"), False),
     )
