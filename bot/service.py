@@ -28,16 +28,17 @@ class MotivationService:
     ) -> tuple[Leaderboard, str, bytes]:
         now = datetime.now(self.tz)
         target_day = day or today_in_tz(self.timezone)
-        agents, source = await self.toniva.fetch_agent_stats(target_day, target_day)
+        agents, source = await self.toniva.fetch_agent_stats(target_day, period)
         board = build_leaderboard(
             agents, source=source, period=period, day=target_day
         )
         caption = build_caption(board, period, now=now)
         image = render_leaderboard_card(board, period)
         logger.info(
-            "Leaderboard hazır: period=%s day=%s source=%s calls_top=%s talk_top=%s",
+            "Leaderboard: period=%s day=%s window=%s source=%s calls_top=%s talk_top=%s",
             period.value,
             target_day.isoformat(),
+            period.window_label,
             source,
             board.call_leader.name if board.call_leader else None,
             board.talk_leader.name if board.talk_leader else None,

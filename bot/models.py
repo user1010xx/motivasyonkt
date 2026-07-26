@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import time
 from enum import Enum
 
 
@@ -24,6 +25,27 @@ class Period(str, Enum):
             Period.OGLEN: "ÖĞLE ZİRVESİ",
             Period.AKSAM: "AKŞAM TACI",
         }[self]
+
+    @property
+    def cutoff(self) -> time:
+        """Gün başından (00:00) bu saate kadar olan veriler alınır (dahil değil: exact cutoff = bitiş).
+
+        /sabah  → 00:00–12:00
+        /oglen  → 00:00–16:00
+        /aksam  → 00:00–23:59:59 (tüm gün)
+        """
+        return {
+            Period.SABAH: time(12, 0, 0),
+            Period.OGLEN: time(16, 0, 0),
+            Period.AKSAM: time(23, 59, 59),
+        }[self]
+
+    @property
+    def window_label(self) -> str:
+        end = self.cutoff
+        if end.hour == 23 and end.minute == 59:
+            return "00:00 – 23:59"
+        return f"00:00 – {end.strftime('%H:%M')}"
 
 
 @dataclass
@@ -51,6 +73,7 @@ class Leaderboard:
     source: str
     period_label: str
     date_label: str
+    window_label: str = ""
 
     @property
     def call_leader(self) -> AgentStats | None:

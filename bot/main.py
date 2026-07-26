@@ -128,11 +128,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Merhaba! 🎯 Toniva motivasyon botu hazır.\n\n"
         f"Komutlar ({where}):\n"
-        "/sabah — bugünün sabah kartı\n"
-        "/sabah dün — dünün verisi\n"
-        "/sabah 26.07.2026 — belirli gün\n"
-        "/oglen · /aksam — aynı şekilde tarih alabilir\n"
-        "/debug · /debug dün — Toniva alan özeti\n"
+        "/sabah — 00:00–12:00 çağrı + toplam konuşma (Top 3)\n"
+        "/oglen — 00:00–16:00\n"
+        "/aksam — 00:00–23:59 (tüm gün)\n"
+        "/sabah dün  ·  /sabah 26.07.2026\n"
+        "/debug dün  ·  /debug oglen 26.07.2026\n"
         "/test — hızlı deneme\n"
         "/durum — ayar özeti\n\n"
         "• Özelden sadece yetkili kullanıcıya yanıt verir.\n"
@@ -225,17 +225,22 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_not_admin(update, settings):
         return
 
+    period_for_debug = Period.SABAH
+    date_args = list(context.args or [])
+    if date_args and date_args[0].lower() in {"sabah", "oglen", "aksam"}:
+        period_for_debug = Period(date_args[0].lower())
+        date_args = date_args[1:]
     try:
-        day = parse_day_arg(context.args, timezone=settings.timezone)
+        day = parse_day_arg(date_args, timezone=settings.timezone)
     except DateParseError as exc:
         await update.effective_message.reply_text(str(exc))
         return
 
     status = await update.effective_message.reply_text(
-        f"🔍 Toniva özeti · {day.strftime('%d.%m.%Y')}…"
+        f"🔍 Toniva özeti · {day.strftime('%d.%m.%Y')} · {period_for_debug.window_label}…"
     )
     try:
-        text = await service.toniva.debug_reports(day, day)
+        text = await service.toniva.debug_reports(day, period_for_debug)
         if len(text) > 3500:
             text = text[:3490] + "\n…"
         await update.effective_message.reply_text(
@@ -296,6 +301,7 @@ def build_app(settings: Settings) -> Application:
         base_url=settings.toniva_base_url,
         api_key=settings.toniva_api_key,
         mock_mode=settings.mock_mode or not settings.has_toniva,
+        timezone=settings.timezone,
     )
     service = MotivationService(toniva=toniva, timezone=settings.timezone)
 
