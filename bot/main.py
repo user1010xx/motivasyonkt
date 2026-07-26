@@ -278,6 +278,8 @@ def main() -> None:
     app = build_app(settings)
 
     async def post_init(application: Application) -> None:
+        # Polling ile webhook çakışmasın (Railway / eski webhook kalıntısı)
+        await application.bot.delete_webhook(drop_pending_updates=False)
         _setup_jobs(application, settings)
         me = await application.bot.get_me()
         logger.info(
@@ -285,6 +287,11 @@ def main() -> None:
             me.username,
             settings.telegram_admin_ids,
             settings.telegram_chat_ids,
+        )
+        logger.info(
+            "Komutlar SADECE şu user id'lere yanıt verir: %s — "
+            "Id yanlışsa bot sessiz kalır (özelde de).",
+            settings.telegram_admin_ids,
         )
 
     app.post_init = post_init
@@ -296,7 +303,11 @@ def main() -> None:
         settings.telegram_chat_ids,
         settings.telegram_admin_ids,
     )
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # drop_pending_updates=False: kuyruktaki /start vs. işlensin
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=False,
+    )
 
 
 if __name__ == "__main__":

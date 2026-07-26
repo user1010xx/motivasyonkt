@@ -21,9 +21,15 @@ def _int_list(value: str | None) -> list[int]:
         return []
     out: list[int] = []
     for part in value.split(","):
-        part = part.strip()
+        part = part.strip().strip('"').strip("'")
         if not part:
             continue
+        # @username kabul edilmez — sadece sayısal Telegram user id
+        if not part.lstrip("-").isdigit():
+            raise ValueError(
+                f"TELEGRAM_ADMIN_IDS geçersiz: {part!r}. "
+                "Sadece sayısal user id yaz (örn. 123456789). @username olmaz."
+            )
         out.append(int(part))
     return out
 
