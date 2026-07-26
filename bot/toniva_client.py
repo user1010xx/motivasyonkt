@@ -347,6 +347,21 @@ def _guess_name(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _duration_seconds_from_pair(key: str, value: Any) -> int:
+    """Alan adina göre süreyi saniyeye çevir."""
+    kl = key.lower()
+    raw = _as_int(value)
+    if raw <= 0:
+        return 0
+    if "minute" in kl or "dakika" in kl or kl.endswith("min") or kl.endswith("_min"):
+        return raw * 60
+    if "hour" in kl or "saat" in kl:
+        return raw * 3600
+    if "ms" in kl or "millis" in kl:
+        return raw // 1000
+    return raw
+
+
 def _guess_calls_and_talk(row: dict[str, Any]) -> tuple[int, int]:
     # nested metrics
     candidates = [row]
@@ -359,30 +374,21 @@ def _guess_calls_and_talk(row: dict[str, Any]) -> tuple[int, int]:
     talk = 0
     for c in candidates:
         if calls == 0:
-            calls = _as_int(_pick(c, _CALL_KEYS))
-        if talk == 0:
-            talk = _as_int(_pick(c, _TALK_KEYS))
-        # dakika alanları
-        if talk == 0:
-            for k, v in c.items():
-                kl = str(k).lower()
-                if "minute" in kl or "dakika" in kl:
-                    talk = _as_int(v) * 60
-                    break
+            # count anahtarı çok genel; sadece bilinen call key'leri
+            for ck in _CALL_KEYS:
+                if ck == "count" or ck == "total":
+                    continue
+                if ck in c or ck.lower() in {str(k).lower() for k in c}:
+                    calls = _as_int(_pick(c, (ck,)))
+                    if calls:
+                        break
+            if calls == 0:
+                calls = _as_int(_pick(c, _CALL_KEYS))
 
-    # Fuzzy: key adında call/talk geçen sayılar
-    if calls == 0 or talk == 0:
-        for c in candidates:
+        if talk == 0:
             for k, v in c.items():
                 kl = str(k).lower()
-                if calls == 0 and any(
-                    x in kl for x in ("call", "cagri", "çağrı", "answered", "handled")
-                ):
-                    if isinstance(v, (int, float)) or (
-                        isinstance(v, str) and v.replace(".", "", 1).isdigit()
-                    ):
-                        calls = _as_int(v)
-                if talk == 0 and any(
+                if any(
                     x in kl
                     for x in (
                         "talk",
@@ -391,9 +397,37 @@ def _guess_calls_and_talk(row: dict[str, Any]) -> tuple[int, int]:
                         "speak",
                         "handle_time",
                         "konus",
+                        "aht",
                     )
                 ):
-                    talk = _as_int(v)
+                    talk = _duration_seconds_from_pair(str(k), v)
+                    if talk:
+                        break
+            if talk == 0:
+                picked_key = None
+                for tk in _TALK_KEYS:
+                    if _pick(c, (tk,)) is not None:
+                        picked_key = tk
+                        break
+                if picked_key:
+                    talk = _duration_seconds_from_pair(
+                        picked_key, _pick(c, (picked_key,))
+                    )
+
+    # Fuzzy call count
+    if calls == 0:
+        for c in candidates:
+            for k, v in c.items():
+                kl = str(k).lower()
+                if any(
+                    x in kl for x in ("call", "cagri", "çağrı", "answered", "handled")
+                ):
+                    if isinstance(v, (int, float)) or (
+                        isinstance(v, str) and v.replace(".", "", 1).isdigit()
+                    ):
+                        calls = _as_int(v)
+                        if calls:
+                            break
 
     return calls, talk
 
