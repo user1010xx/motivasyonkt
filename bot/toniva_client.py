@@ -13,6 +13,12 @@ from bot.models import AgentStats, Period
 logger = logging.getLogger(__name__)
 
 _NAME_KEYS = (
+    # Toniva conversations
+    "CompletedExtensionName",
+    "ExtensionName",
+    "completedExtensionName",
+    "extensionName",
+    "extension_name",
     "agentName",
     "agent_name",
     "userName",
@@ -27,15 +33,17 @@ _NAME_KEYS = (
     "operator",
     "personel",
     "agentFullName",
-    "extensionName",
-    "extension_name",
     "memberName",
     "staffName",
     "employeeName",
 )
 
-# Konuşma süresi — ring/wait/hold YOK (öncelik sırası)
+# Konuşma süresi — ring/wait YOK
+# Toniva: CallTime = konuşma/bağlı kalma süresi (saniye); RingTime/WaitTime değil
 _TALK_DURATION_KEYS = (
+    "CallTime",  # Toniva conversations
+    "callTime",
+    "call_time",
     "billsec",
     "billSec",
     "billableSeconds",
@@ -77,6 +85,24 @@ _TALK_DURATION_KEYS = (
     "talk",
 )
 
+# Bu alanlar SÜRE (sn); asla timestamp sanılmamalı
+_DURATION_NOT_TIMESTAMP_KEYS = frozenset(
+    {
+        "calltime",
+        "call_time",
+        "ringtime",
+        "ring_time",
+        "waittime",
+        "wait_time",
+        "holdtime",
+        "hold_time",
+        "billsec",
+        "duration",
+        "talkseconds",
+        "talk_seconds",
+    }
+)
+
 # Genel duration — ring değilse yedek
 _DURATION_FALLBACK_KEYS = (
     "duration",
@@ -111,8 +137,9 @@ _END_TIME_KEYS = (
     "call_end",
 )
 
-# Saat içeren alanlar önce; çıplak "date" en sonda ve sadece clock varsa
+# Timestamp alanları — CallTime/RingTime/WaitTime YOK (onlar süre)
 _TIME_KEYS = (
+    "CreateDate",  # Toniva: CreateDate + CreateTime ayrı
     "startTime",
     "start_time",
     "startedAt",
@@ -138,9 +165,6 @@ _TIME_KEYS = (
     "call_date_time",
     "callDate",
     "call_date",
-    "callTime",
-    "call_time",
-    "time",
 )
 
 
@@ -274,6 +298,13 @@ def _as_name(value: Any) -> str | None:
 
 
 def _guess_name(row: dict[str, Any]) -> str | None:
+    # Toniva: tamamlanan hat adı öncelikli
+    for key in ("CompletedExtensionName", "ExtensionName", "extensionName"):
+        if row.get(key):
+            name = _as_name(row.get(key))
+            if name:
+                return name
+
     name = _as_name(_pick(row, _NAME_KEYS))
     if name:
         return name
@@ -318,7 +349,16 @@ def _is_ring_or_wait_key(key: str) -> bool:
 
 
 def _talk_seconds_from_row(row: dict[str, Any]) -> int:
-    """Tek görüşmenin konuşma süresi (saniye). Ring/wait hariç."""
+    """Tek görüşmenin konuşma süresi (saniye). Ring/wait hariç.
+
+    Toniva conversations: CallTime = konuşma süresi (sn).
+    """
+    # Toniva doğrudan alan
+    if "CallTime" in row and row["CallTime"] not in (None, ""):
+        sec = _to_seconds(row["CallTime"], key="CallTime")
+        # 0 gerçekten cevapsız/çok kısa olabilir — 0 döndür
+        return max(0, sec)
+
     flat = _flatten(row)
     candidates = [row, flat]
     for nest in ("metrics", "stats", "summary", "data", "cdr", "call", "recording"):
@@ -333,7 +373,6 @@ def _talk_seconds_from_row(row: dict[str, Any]) -> int:
                     continue
                 val = _pick(c, (key,)) if isinstance(c, dict) else None
                 if val is None and isinstance(c, dict):
-                    # flatten kısa ad
                     val = c.get(key)
                 if val is not None and val != "":
                     sec = _to_seconds(val, key=key)
@@ -420,6 +459,9 @@ def _parse_dt(
         return None
     if isinstance(value, (int, float)):
         ts = float(value)
+        # 0 / küçük sayılar süre alanıdır (CallTime=0) — epoch değil
+        if ts < 1_000_000_000:  # ~2001 öncesi epoch; gerçek çağrı timestamp'i değil
+            return None
         if ts > 1e12:
             ts /= 1000.0
         try:
@@ -485,11 +527,30 @@ def _row_datetime(
     default_day: date,
     require_clock: bool = True,
 ) -> datetime | None:
+    # --- Toniva: CreateDate + CreateTime ---
+    create_date = row.get("CreateDate") or row.get("createDate")
+    create_time = row.get("CreateTime") or row.get("createTime")
+    if create_date is not None and create_time is not None:
+        combined = f"{str(create_date).strip()} {str(create_time).strip()}"
+        dt = _parse_dt(combined, tz=tz, default_day=default_day, require_clock=True)
+        if dt:
+            return dt
+    if create_time is not None and _text_has_clock(str(create_time)):
+        # Sadece saat geldiyse default_day ile birleştir
+        dt = _parse_dt(
+            str(create_time).strip(), tz=tz, default_day=default_day, require_clock=True
+        )
+        if dt:
+            return dt
+
     flat = _flatten(row)
     search_spaces = [row, flat]
 
     for space in search_spaces:
         for key in _TIME_KEYS:
+            leaf = str(key).lower().rsplit(".", 1)[-1]
+            if leaf in _DURATION_NOT_TIMESTAMP_KEYS:
+                continue
             val = space.get(key)
             if val is None:
                 val = _pick(space, (key,))
@@ -500,15 +561,33 @@ def _row_datetime(
                 if dt:
                     return dt
 
-    # date + time ayrı alanlar
+    # date + time ayrı alanlar (CreateDate/CreateTime dışı adlar)
     for space in search_spaces:
         date_val = None
         time_val = None
         for k, v in space.items():
             kl = str(k).lower().rsplit(".", 1)[-1]
-            if kl in {"date", "calldate", "call_date", "gun", "day"}:
+            if kl in _DURATION_NOT_TIMESTAMP_KEYS:
+                continue
+            if kl in {
+                "date",
+                "calldate",
+                "call_date",
+                "gun",
+                "day",
+                "createdate",
+                "create_date",
+            }:
                 date_val = v
-            if kl in {"time", "calltime", "call_time", "saat"}:
+            if kl in {
+                "time",
+                "saat",
+                "createtime",
+                "create_time",
+            }:
+                # CallTime hariç (süre)
+                if kl == "calltime":
+                    continue
                 time_val = v
         if date_val is not None and time_val is not None:
             combined = f"{date_val} {time_val}"
@@ -516,15 +595,18 @@ def _row_datetime(
             if dt:
                 return dt
 
-    # fuzzy — çıplak date (clock yok) require_clock ile elenir
+    # fuzzy — süre alanlarını atla
     for space in search_spaces:
         for k, v in space.items():
             kl = str(k).lower()
-            if _is_ring_or_wait_key(kl):
+            leaf = kl.rsplit(".", 1)[-1]
+            if leaf in _DURATION_NOT_TIMESTAMP_KEYS or _is_ring_or_wait_key(kl):
+                continue
+            if "calltime" in kl or "ringtime" in kl or "waittime" in kl:
                 continue
             if any(
                 x in kl
-                for x in ("start", "time", "created", "begin", "connect", "answer")
+                for x in ("start", "created", "begin", "connect", "answer", "createtime")
             ):
                 dt = _parse_dt(
                     v, tz=tz, default_day=default_day, require_clock=require_clock

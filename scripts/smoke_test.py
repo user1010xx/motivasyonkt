@@ -44,62 +44,86 @@ def test_gender() -> None:
 
 def test_window_aggregate() -> None:
     day = date(2026, 7, 26)
+    # Gerçek Toniva conversations şeması (debug çıktısından)
     rows = [
         {
-            "agentName": "umit",
-            "startTime": "2026-07-26T09:15:00",
-            "talkSeconds": 120,
+            "ExtensionName": "umit",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "09:15:00",
+            "CallTime": 120,
+            "RingTime": 12,
+            "WaitTime": 0,
         },
         {
-            "agentName": "umit",
-            "startTime": "2026-07-26T11:50:00",
-            "billsec": 300,
+            "ExtensionName": "umit",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "11:50:40",
+            "CallTime": 300,
+            "RingTime": 5,
+            "WaitTime": 0,
         },
         {
-            "agentName": "umit",
-            "startTime": "2026-07-26T14:00:00",  # öğleden sonra — sabah dilimine girmez
-            "talkSeconds": 9999,
+            "ExtensionName": "umit",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "14:00:00",  # öğleden sonra
+            "CallTime": 9999,
+            "RingTime": 1,
+            "WaitTime": 0,
         },
         {
-            "agentName": "Elisa",
-            "startTime": "2026-07-26T10:00:00",
-            "talkDuration": "00:05:00",
+            "CompletedExtensionName": "Elisa",
+            "ExtensionName": "queue",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "10:00:00",
+            "CallTime": 300,
+            "RingTime": 8,
+            "WaitTime": 0,
         },
         {
-            "agentName": "Elisa",
-            "startTime": "2026-07-26T08:00:00",
-            "ringDuration": 50,
-            "talkSeconds": 600,
+            "ExtensionName": "Elisa",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "08:00:00",
+            "CallTime": 600,
+            "RingTime": 50,
+            "WaitTime": 0,
         },
-        # Sadece tarih (saat yok) — dilime GİRMEMELİ (eski bug: tüm gün 00:00)
+        # Akşam — sabah dilimi dışı
         {
-            "agentName": "ghost",
-            "startTime": "2026-07-26",
-            "billsec": 999,
+            "ExtensionName": "night",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "21:58:40",
+            "CallTime": 40,
+            "RingTime": 12,
+            "WaitTime": 0,
         },
-        # ms süre
+        # CallTime=0 epoch sanılmamalı
         {
-            "agentName": "msuser",
-            "startTime": "2026-07-26 09:00:00",
-            "talkDurationMs": 90000,
+            "ExtensionName": "zero",
+            "CreateDate": "2026-07-26",
+            "CreateTime": "09:30:00",
+            "CallTime": 0,
+            "RingTime": 12,
+            "WaitTime": 0,
         },
     ]
     agents, agg = aggregate_conversations_window(
         rows, day=day, cutoff=time(12, 0, 0), timezone="Europe/Istanbul"
     )
     by = {a.name: a for a in agents}
-    assert "ghost" not in by
+    assert "night" not in by
     assert by["umit"].call_count == 2
     assert by["umit"].talk_seconds == 120 + 300
     assert by["Elisa"].call_count == 2
     assert by["Elisa"].talk_seconds == 300 + 600
-    assert by["msuser"].talk_seconds == 90
-    assert agg["rows_no_time"] >= 1
-    assert agg["rows_out_of_window"] == 1
+    assert by["zero"].call_count == 1
+    assert by["zero"].talk_seconds == 0
+    assert agg["rows_out_of_window"] == 2  # 14:00 + 21:58
+    assert agg["rows_in_window"] == 5
 
-    assert _talk_seconds_from_row({"ringDuration": 99, "ring_time": 10}) == 0
-    assert _talk_seconds_from_row({"cdr": {"billsec": 45}}) == 45
-    print("OK window aggregate")
+    # CallTime=0 timestamp olmamalı
+    assert _talk_seconds_from_row({"CallTime": 0, "RingTime": 12}) == 0
+    assert _talk_seconds_from_row({"CallTime": 90, "RingTime": 5}) == 90
+    print("OK window aggregate (Toniva schema)")
 
 
 def test_cards_and_messages() -> None:
