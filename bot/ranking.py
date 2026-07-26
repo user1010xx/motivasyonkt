@@ -12,6 +12,8 @@ def build_leaderboard(
     period: Period,
     day: date,
     top_n: int = 3,
+    window_label: str | None = None,
+    period_label: str | None = None,
 ) -> Leaderboard:
     active = [a for a in agents if a.call_count > 0 or a.talk_seconds > 0]
 
@@ -31,7 +33,7 @@ def build_leaderboard(
         by_calls=by_calls,
         by_talk=by_talk,
         source=source,
-        period_label=period.label,
+        period_label=period_label or period.label,
         date_label=day.strftime("%d.%m.%Y"),
-        window_label=period.window_label,
+        window_label=window_label or period.window_label,
     )

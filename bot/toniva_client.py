@@ -905,10 +905,14 @@ class TonivaClient:
         self,
         day: date,
         period: Period,
+        *,
+        cutoff_override: time | None = None,
+        window_label: str | None = None,
     ) -> tuple[list[AgentStats], str]:
         """
         Dönem dilimine göre agent istatistiği:
           sabah 00:00–12:00, öğlen 00:00–16:00, akşam 00:00–23:59
+          cutoff_override: /gonder için 00:00–şimdi
         Kaynak: conversations (çağrı bazlı toplam).
         """
         if self.mock_mode or not self.api_key:
@@ -916,7 +920,12 @@ class TonivaClient:
             self.last_debug = "mock"
             return list(MOCK_AGENTS), "mock"
 
-        cutoff = period.cutoff
+        cutoff = cutoff_override or period.cutoff
+        win = window_label or (
+            f"00:00 – {cutoff.strftime('%H:%M')}"
+            if not (cutoff.hour == 23 and cutoff.minute >= 59)
+            else period.window_label
+        )
         async with httpx.AsyncClient(timeout=90.0) as client:
             try:
                 rows = await self._fetch_all_conversations(client, day)
@@ -933,7 +942,7 @@ class TonivaClient:
                 timezone=self.timezone,
             )
             self.last_debug = (
-                f"day={day} period={period.value} window={period.window_label} "
+                f"day={day} period={period.value} window={win} "
                 f"raw={agg['rows_total']} in_window={agg['rows_in_window']} "
                 f"no_time={agg['rows_no_time']} out={agg['rows_out_of_window']} "
                 f"no_name={agg['rows_no_name']} agents={len(agents)} talk_sum={agg['talk_sum']}"
@@ -947,8 +956,8 @@ class TonivaClient:
                         "Dilimde %s çağrı var ama talk_sum=0 — süre alanı eşleşmiyor.",
                         agg["rows_in_window"],
                     )
-                    return agents, f"conversations[{period.window_label};talk=0?]"
-                return agents, f"conversations[{period.window_label}]"
+                    return agents, f"conversations[{win};talk=0?]"
+                return agents, f"conversations[{win}]"
 
             if agg["rows_total"] == 0:
                 return [], "empty"

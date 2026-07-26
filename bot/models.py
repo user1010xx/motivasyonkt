@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import time
+from datetime import datetime, time
 from enum import Enum
 
 
@@ -46,6 +46,20 @@ class Period(str, Enum):
         if end.hour == 23 and end.minute == 59:
             return "00:00 – 23:59"
         return f"00:00 – {end.strftime('%H:%M')}"
+
+
+def period_for_clock(now: datetime) -> Period:
+    """Saate göre stil/dilim ailesi (canlı gönderim için)."""
+    t = now.time()
+    if t < time(12, 0):
+        return Period.SABAH
+    if t < time(16, 0):
+        return Period.OGLEN
+    return Period.AKSAM
+
+
+def live_window_label(now: datetime) -> str:
+    return f"00:00 – {now.strftime('%H:%M')}"
 
 
 @dataclass

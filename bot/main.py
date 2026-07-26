@@ -68,6 +68,7 @@ async def _send_period(
     chat_id: str | int,
     reply_to: int | None = None,
     day=None,
+    until_now: bool = False,
 ) -> None:
     from datetime import date as date_cls
 
@@ -77,17 +78,18 @@ async def _send_period(
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
     try:
-        _board, caption, image = await service.build(period, day=target_day)
+        _board, caption, image = await service.build(
+            period, day=target_day, until_now=until_now
+        )
     except Exception as exc:
         logger.exception("Motivasyon üretilemedi: %s", exc)
-        # HTML'de kırılmasın
         detail = str(exc).replace("<", "&lt;").replace(">", "&gt;")
         if len(detail) > 800:
             detail = detail[:797] + "…"
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                f"⚠️ <b>{period.label}</b> mesajı üretilemedi.\n\n"
+                f"⚠️ <b>{'Canlı' if until_now else period.label}</b> mesajı üretilemedi.\n\n"
                 f"{detail}\n\n"
                 "<i>Toniva 403 ise: API key scope (reports:read) veya "
                 "IP whitelist (Railway IP) kontrol et.</i>"
@@ -97,7 +99,6 @@ async def _send_period(
         )
         return
 
-    # Telegram caption limiti ~1024
     if len(caption) > 1000:
         caption = caption[:997] + "…"
 
@@ -109,8 +110,9 @@ async def _send_period(
         reply_to_message_id=reply_to,
     )
     logger.info(
-        "Gönderildi: period=%s chat=%s mock=%s",
+        "Gönderildi: period=%s until_now=%s chat=%s mock=%s",
         period.value,
+        until_now,
         chat_id,
         settings.mock_mode,
     )
@@ -128,16 +130,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Merhaba! 🎯 Toniva motivasyon botu hazır.\n\n"
         f"Komutlar ({where}):\n"
-        "/sabah — 00:00–12:00 çağrı + toplam konuşma (Top 3)\n"
+        "/gonder — canlı zirve (00:00–şimdi) → gruba görsel+metin\n"
+        "/sabah — 00:00–12:00\n"
         "/oglen — 00:00–16:00\n"
-        "/aksam — 00:00–23:59 (tüm gün)\n"
+        "/aksam — 00:00–23:59\n"
         "/sabah dün  ·  /sabah 26.07.2026\n"
-        "/debug dün  ·  /debug oglen 26.07.2026\n"
-        "/test — hızlı deneme\n"
-        "/durum — ayar özeti\n\n"
-        "• Özelden sadece yetkili kullanıcıya yanıt verir.\n"
-        "• Eklendiğin gruplarda komut çalıştırabilirsin.\n"
-        "• Otomatik gönderimler env'deki grup id listesine gider."
+        "/debug · /durum · /test\n\n"
+        "• /gonder: env'deki TELEGRAM_CHAT_ID(S) gruplarına gönderir.\n"
+        "• Özelden sadece yetkili kullanıcıya yanıt verir."
     )
 
 
@@ -214,6 +214,89 @@ async def cmd_aksam(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Öğlen şablonu ile hızlı deneme."""
     await _period_command(update, context, Period.OGLEN)
+
+
+async def cmd_gonder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Canlı dilim (00:00–şimdi) kral/kraliçe kartını env gruplarına gönder.
+
+    Sadece admin; tercihen özel sohbetten kullanılır.
+    """
+    settings: Settings = context.application.bot_data["settings"]
+    if not update.effective_message or not update.effective_chat:
+        return
+    if await _reject_if_not_admin(update, settings):
+        return
+
+    if not settings.telegram_chat_ids:
+        await update.effective_message.reply_text(
+            "TELEGRAM_CHAT_ID / TELEGRAM_CHAT_IDS tanımlı değil. "
+            "Railway env'e grup id ekle."
+        )
+        return
+
+    # Opsiyonel: /gonder burada → sadece bu sohbete de kopya
+    # Varsayılan: sadece env grupları
+    status = await update.effective_message.reply_text(
+        "⏳ Canlı zirve hazırlanıyor (bugün 00:00 → şimdi)…"
+    )
+
+    from bot.models import period_for_clock
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime.now(ZoneInfo(settings.timezone))
+    style = period_for_clock(now)
+    ok, fail = 0, 0
+    errors: list[str] = []
+
+    try:
+        service: MotivationService = context.application.bot_data["service"]
+        board, caption, image = await service.build(style, until_now=True)
+        if len(caption) > 1000:
+            caption = caption[:997] + "…"
+
+        for chat_id in settings.telegram_chat_ids:
+            try:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=image,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+                ok += 1
+            except Exception as exc:
+                fail += 1
+                errors.append(f"{chat_id}: {exc}")
+                logger.exception(" /gonder grup gönderimi fail: %s", chat_id)
+
+        call = board.call_leader
+        talk = board.talk_leader
+        summary = (
+            f"✅ <b>Canlı zirve gönderildi</b>\n"
+            f"⏱ Dilim: <b>{board.window_label}</b>\n"
+            f"📤 Grup: {ok} ok"
+            + (f", {fail} hata" if fail else "")
+            + "\n\n"
+        )
+        if call:
+            summary += f"📞 Çağrı: <b>{call.name}</b> ({call.call_count})\n"
+        if talk:
+            summary += f"🎧 Süre: <b>{talk.name}</b> ({talk.talk_label})\n"
+        if errors:
+            summary += "\n<code>" + "\n".join(errors)[:500] + "</code>"
+
+        await update.effective_message.reply_html(summary)
+    except Exception as exc:
+        logger.exception("/gonder hata: %s", exc)
+        detail = str(exc).replace("<", "&lt;").replace(">", "&gt;")
+        await update.effective_message.reply_html(
+            f"⚠️ Canlı zirve üretilemedi.\n<code>{detail[:800]}</code>"
+        )
+    finally:
+        try:
+            await status.delete()
+        except Exception:
+            pass
 
 
 async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -316,6 +399,7 @@ def build_app(settings: Settings) -> Application:
     app.add_handler(CommandHandler("oglen", cmd_oglen))
     app.add_handler(CommandHandler("aksam", cmd_aksam))
     app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("gonder", cmd_gonder))
     app.add_handler(CommandHandler("debug", cmd_debug))
 
     return app
