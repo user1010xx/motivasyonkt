@@ -1,0 +1,6 @@
+python-telegram-bot[job-queue]==21.10
+httpx==0.28.1
+python-dotenv==1.1.0
+APScheduler==3.11.2
+Pillow==12.2.0
+tzdata>=2024.1
