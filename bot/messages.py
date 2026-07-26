@@ -103,10 +103,29 @@ def build_caption(board: Leaderboard, period: Period, *, now: datetime | None = 
     talk = board.talk_leader
 
     if not call and not talk:
+        empty_notes = {
+            Period.SABAH: (
+                "Gün yeni başladı — henüz skor yok.\n"
+                "İlk çağrılar gelsin, liderlik tablosu dolsun. ☕🔥"
+            ),
+            Period.OGLEN: (
+                "Şu ana kadar bugün için çağrı/skor görünmüyor.\n"
+                "Öğleden sonra tempo artınca zirve dolacak. 💪"
+            ),
+            Period.AKSAM: (
+                "Bugün için henüz listelenecek performans yok.\n"
+                "Yarın yeni rekorlar için hazır olun. 🌟"
+            ),
+        }
+        src = ""
+        if board.source == "empty":
+            src = "\n\n<i>Toniva OK · bugün satır yok (00:00 sonrası normal olabilir).</i>"
+        elif board.source == "mock":
+            src = "\n\n<i>🧪 MOCK veri</i>"
         return (
-            f"⚠️ <b>{period.label} motivasyon</b> ({board.date_label})\n\n"
-            "Bugün için henüz personel performansı bulunamadı.\n"
-            "Toniva verisi gelince liderlik tablosu dolacak."
+            f"📭 <b>{period.title}</b> · {board.date_label} · {now.strftime('%H:%M')}\n\n"
+            f"{empty_notes[period]}"
+            f"{src}"
         )
 
     parts: list[str] = []

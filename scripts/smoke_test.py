@@ -57,7 +57,26 @@ def test_parsers() -> None:
     by_name2 = {a.name: a for a in agents2}
     assert by_name2["Ali Veli"].call_count == 2
     assert by_name2["Ali Veli"].talk_seconds == 150
+
+    # nested metrics
+    nested = {
+        "data": [
+            {
+                "agent": {"firstName": "Can", "lastName": "Demir"},
+                "metrics": {"totalCalls": 7, "talkMinutes": 12},
+            }
+        ]
+    }
+    agents3 = parse_performance_rows(nested)
+    assert len(agents3) == 1
+    assert agents3[0].name == "Can Demir"
+    assert agents3[0].call_count == 7
+    assert agents3[0].talk_seconds == 12 * 60
+
+    # empty
+    assert parse_performance_rows({"rows": []}) == []
     print("OK parsers")
+
 
 
 def test_cards_and_messages() -> None:

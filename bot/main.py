@@ -203,6 +203,35 @@ async def cmd_test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _period_command(update, context, Period.OGLEN)
 
 
+async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Toniva rapor yapısını PII'siz özetle (alan eşleştirme için)."""
+    settings: Settings = context.application.bot_data["settings"]
+    service: MotivationService = context.application.bot_data["service"]
+    if not update.effective_message:
+        return
+    if await _reject_if_not_admin(update, settings):
+        return
+
+    status = await update.effective_message.reply_text("🔍 Toniva rapor özeti alınıyor…")
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        day = datetime.now(ZoneInfo(settings.timezone)).date()
+        text = await service.toniva.debug_reports(day, day)
+        # Telegram mesaj limiti
+        if len(text) > 3500:
+            text = text[:3490] + "\n…"
+        await update.effective_message.reply_text(f"<pre>{text}</pre>", parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Debug hata: {exc}")
+    finally:
+        try:
+            await status.delete()
+        except Exception:
+            pass
+
+
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     period: Period = context.job.data["period"]  # type: ignore[index]
     settings: Settings = context.application.bot_data["settings"]
@@ -263,6 +292,7 @@ def build_app(settings: Settings) -> Application:
     app.add_handler(CommandHandler("oglen", cmd_oglen))
     app.add_handler(CommandHandler("aksam", cmd_aksam))
     app.add_handler(CommandHandler("test", cmd_test))
+    app.add_handler(CommandHandler("debug", cmd_debug))
 
     return app
 
