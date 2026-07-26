@@ -1,39 +1,28 @@
 from __future__ import annotations
 
+import colorsys
+import hashlib
 import io
+import math
+import random
+import time
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from bot.models import Leaderboard, Period
+from bot.gender import is_female_name
+from bot.models import AgentStats, Leaderboard, Period
 
-# bg1, bg2, accent, accent2
-_PALETTES: dict[
-    Period, tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]
-] = {
-    Period.SABAH: (
-        (255, 95, 20),
-        (255, 60, 70),
-        (255, 200, 60),
-        (255, 255, 255),
-    ),
-    Period.OGLEN: (
-        (15, 80, 210),
-        (90, 40, 200),
-        (80, 220, 255),
-        (255, 255, 255),
-    ),
-    Period.AKSAM: (
-        (55, 25, 110),
-        (140, 40, 160),
-        (255, 170, 80),
-        (255, 255, 255),
-    ),
-}
-
-_WIDTH = 1080
-_HEIGHT = 1480
+_WIDTH = 1200
+_HEIGHT = 900
 _ASSETS = Path(__file__).resolve().parent / "assets" / "fonts"
+
+# Döneme göre ana renk aileleri (H 0-1)
+_PERIOD_HUE: dict[Period, float] = {
+    Period.SABAH: 0.08,   # turuncu-altın
+    Period.OGLEN: 0.58,   # mavi
+    Period.AKSAM: 0.78,   # mor
+}
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -69,256 +58,379 @@ def _display_name(name: str) -> str:
     return " ".join(parts)
 
 
-def _gradient(
-    size: tuple[int, int], c1: tuple[int, int, int], c2: tuple[int, int, int]
+def call_royal_label(name: str) -> str:
+    if is_female_name(name):
+        return "Çağrı adedi kraliçesi"
+    return "Çağrı adedi kralı"
+
+
+def talk_royal_label(name: str) -> str:
+    if is_female_name(name):
+        return "Konuşma süresi kraliçesi"
+    return "Konuşma süresi kralı"
+
+
+def _hsv(h: float, s: float, v: float) -> tuple[int, int, int]:
+    r, g, b = colorsys.hsv_to_rgb(h % 1.0, max(0, min(1, s)), max(0, min(1, v)))
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+def _rng_for(board: Leaderboard, period: Period) -> random.Random:
+    """Her iletide farklı: zaman + liderler + dönem."""
+    raw = (
+        f"{board.date_label}|{period.value}|"
+        f"{board.call_leader.name if board.call_leader else ''}|"
+        f"{board.talk_leader.name if board.talk_leader else ''}|"
+        f"{time.time_ns()}"
+    )
+    seed = int(hashlib.sha256(raw.encode()).hexdigest()[:16], 16)
+    return random.Random(seed)
+
+
+def _gradient_bg(
+    rng: random.Random, period: Period
 ) -> Image.Image:
-    w, h = size
-    base = Image.new("RGB", size, c1)
-    px = base.load()
-    for y in range(h):
-        t = y / max(h - 1, 1)
-        # hafif diagonal
-        r = int(c1[0] * (1 - t) + c2[0] * t)
-        g = int(c1[1] * (1 - t) + c2[1] * t)
-        b = int(c1[2] * (1 - t) + c2[2] * t)
-        for x in range(w):
-            # soft noise-free diagonal blend
-            u = (x / max(w - 1, 1)) * 0.15
-            tt = min(1.0, max(0.0, t + u - 0.08))
-            px[x, y] = (
-                int(c1[0] * (1 - tt) + c2[0] * tt),
-                int(c1[1] * (1 - tt) + c2[1] * tt),
-                int(c1[2] * (1 - tt) + c2[2] * tt),
-            )
-    return base
+    base_h = _PERIOD_HUE[period] + rng.uniform(-0.04, 0.04)
+    style = rng.randint(0, 3)
+    img = Image.new("RGB", (_WIDTH, _HEIGHT))
+    px = img.load()
+
+    if style == 0:
+        # soft office blue-violet blur feel
+        c1 = _hsv(base_h, 0.35, 0.28)
+        c2 = _hsv(base_h + 0.08, 0.45, 0.45)
+    elif style == 1:
+        c1 = _hsv(base_h, 0.55, 0.22)
+        c2 = _hsv(base_h - 0.1, 0.4, 0.5)
+    elif style == 2:
+        c1 = _hsv(base_h + 0.05, 0.25, 0.35)
+        c2 = _hsv(base_h + 0.15, 0.5, 0.25)
+    else:
+        c1 = _hsv(base_h, 0.4, 0.2)
+        c2 = _hsv(base_h + 0.12, 0.55, 0.4)
+
+    for y in range(_HEIGHT):
+        t = y / max(_HEIGHT - 1, 1)
+        for x in range(_WIDTH):
+            u = x / max(_WIDTH - 1, 1)
+            tt = min(1.0, max(0.0, t * 0.7 + u * 0.3 + rng.random() * 0.0))
+            # deterministic-ish without per-pixel rng: use x,y wave
+            wave = 0.08 * math.sin(x * 0.01 + y * 0.008)
+            tt = min(1.0, max(0.0, tt + wave))
+            r = int(c1[0] * (1 - tt) + c2[0] * tt)
+            g = int(c1[1] * (1 - tt) + c2[1] * tt)
+            b = int(c1[2] * (1 - tt) + c2[2] * tt)
+            px[x, y] = (r, g, b)
+
+    # light blobs (bokeh)
+    overlay = Image.new("RGBA", (_WIDTH, _HEIGHT), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    for _ in range(rng.randint(5, 10)):
+        cx = rng.randint(0, _WIDTH)
+        cy = rng.randint(0, _HEIGHT)
+        rad = rng.randint(40, 160)
+        col = (*_hsv(base_h + rng.uniform(-0.1, 0.1), 0.2, 0.9), rng.randint(25, 55))
+        od.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=col)
+    overlay = overlay.filter(ImageFilter.GaussianBlur(rng.randint(18, 35)))
+    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+    return img
 
 
-def _draw_orbs(img: Image.Image, accent: tuple[int, int, int]) -> None:
-    """Arka plan ışık lekeleri."""
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    d = ImageDraw.Draw(overlay)
-    w, h = img.size
-    blobs = [
-        (int(w * 0.85), int(h * 0.12), 180, 50),
-        (int(w * 0.1), int(h * 0.25), 140, 40),
-        (int(w * 0.7), int(h * 0.9), 200, 35),
-    ]
-    for cx, cy, rad, alpha in blobs:
-        d.ellipse(
-            (cx - rad, cy - rad, cx + rad, cy + rad),
-            fill=(*accent, alpha),
+def _draw_confetti(draw: ImageDraw.ImageDraw, rng: random.Random, gold: tuple[int, int, int]) -> None:
+    for _ in range(rng.randint(45, 80)):
+        x = rng.randint(0, _WIDTH)
+        y = rng.randint(0, _HEIGHT)
+        kind = rng.randint(0, 3)
+        col = gold if rng.random() < 0.55 else (
+            255,
+            255,
+            rng.randint(180, 255),
         )
-    blurred = overlay.filter(ImageFilter.GaussianBlur(40))
-    base = img.convert("RGBA")
-    img_out = Image.alpha_composite(base, blurred)
-    img.paste(img_out.convert("RGB"))
+        if kind == 0:
+            # rect confetti
+            w, h = rng.randint(6, 16), rng.randint(10, 22)
+            draw.rectangle((x, y, x + w, y + h), fill=col)
+        elif kind == 1:
+            r = rng.randint(3, 7)
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=col)
+        elif kind == 2:
+            # star-ish
+            r = rng.randint(4, 10)
+            draw.polygon(
+                [
+                    (x, y - r),
+                    (x + r * 0.3, y - r * 0.3),
+                    (x + r, y),
+                    (x + r * 0.3, y + r * 0.3),
+                    (x, y + r),
+                    (x - r * 0.3, y + r * 0.3),
+                    (x - r, y),
+                    (x - r * 0.3, y - r * 0.3),
+                ],
+                fill=col,
+            )
+        else:
+            # ribbon strip
+            draw.line(
+                (x, y, x + rng.randint(-20, 20), y + rng.randint(15, 40)),
+                fill=col,
+                width=rng.randint(2, 4),
+            )
 
 
-def _truncate(
-    draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_w: int
-) -> str:
-    if draw.textlength(text, font=font) <= max_w:
-        return text
-    ell = "…"
-    while text and draw.textlength(text + ell, font=font) > max_w:
-        text = text[:-1]
-    return text + ell
+def _draw_rays(draw: ImageDraw.ImageDraw, rng: random.Random, gold: tuple[int, int, int]) -> None:
+    cx, cy = _WIDTH // 2, 80
+    for i in range(rng.randint(10, 16)):
+        ang = (i / 16) * math.pi + rng.uniform(-0.05, 0.05)
+        length = rng.randint(120, 220)
+        x2 = cx + int(math.cos(ang) * length)
+        y2 = cy + int(math.sin(ang) * length * 0.45)
+        draw.line((cx, cy, x2, y2), fill=(*gold, ), width=2)
 
 
-def _rank_colors(rank: int) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
-    return {
-        1: ((255, 205, 40), (50, 35, 0)),
-        2: ((200, 210, 220), (40, 45, 55)),
-        3: ((220, 150, 80), (50, 30, 10)),
-    }.get(rank, ((140, 140, 150), (255, 255, 255)))
-
-
-def _draw_rank_badge(
+def _draw_trophy(
     draw: ImageDraw.ImageDraw,
-    center: tuple[int, int],
-    rank: int,
-    font: ImageFont.ImageFont,
+    cx: int,
+    cy: int,
+    scale: float,
+    gold: tuple[int, int, int],
 ) -> None:
-    fill, ink = _rank_colors(rank)
-    x, y = center
-    r = 30
-    # outer ring
-    draw.ellipse((x - r - 3, y - r - 3, x + r + 3, y + r + 3), fill=(255, 255, 255))
-    draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
-    label = str(rank)
-    bbox = draw.textbbox((0, 0), label, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text((x - tw / 2, y - th / 2 - 2), label, font=font, fill=ink)
+    """Basit kupa ikonu."""
+    s = scale
+    cup = [
+        (cx - 22 * s, cy - 8 * s),
+        (cx - 18 * s, cy + 18 * s),
+        (cx + 18 * s, cy + 18 * s),
+        (cx + 22 * s, cy - 8 * s),
+    ]
+    draw.polygon(cup, fill=gold)
+    draw.ellipse(
+        (cx - 24 * s, cy - 28 * s, cx + 24 * s, cy - 4 * s),
+        fill=gold,
+    )
+    # handles
+    draw.arc(
+        (cx - 38 * s, cy - 22 * s, cx - 10 * s, cy + 10 * s),
+        90,
+        270,
+        fill=gold,
+        width=max(2, int(4 * s)),
+    )
+    draw.arc(
+        (cx + 10 * s, cy - 22 * s, cx + 38 * s, cy + 10 * s),
+        270,
+        90,
+        fill=gold,
+        width=max(2, int(4 * s)),
+    )
+    # stem + base
+    draw.rectangle(
+        (cx - 6 * s, cy + 18 * s, cx + 6 * s, cy + 32 * s),
+        fill=gold,
+    )
+    draw.rectangle(
+        (cx - 20 * s, cy + 32 * s, cx + 20 * s, cy + 40 * s),
+        fill=gold,
+    )
+
+
+def _rounded_glass(
+    base: Image.Image,
+    box: tuple[int, int, int, int],
+    rng: random.Random,
+) -> None:
+    """Yarı saydam cam kart."""
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    alpha = rng.randint(150, 190)
+    od.rounded_rectangle(box, radius=28, fill=(255, 255, 255, alpha))
+    # border
+    od.rounded_rectangle(box, radius=28, outline=(255, 255, 255, 220), width=2)
+    composed = Image.alpha_composite(base.convert("RGBA"), overlay)
+    base.paste(composed.convert("RGB"))
+
+
+def _fit_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font_size: int,
+    max_w: int,
+    bold: bool = True,
+) -> tuple[ImageFont.ImageFont, str]:
+    size = font_size
+    while size >= 22:
+        font = _font(size, bold=bold)
+        if draw.textlength(text, font=font) <= max_w:
+            return font, text
+        size -= 2
+    font = _font(22, bold=bold)
+    # truncate
+    t = text
+    while t and draw.textlength(t + "…", font=font) > max_w:
+        t = t[:-1]
+    return font, (t + "…") if t != text else t
+
+
+def _center_text(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    font: ImageFont.ImageFont,
+    fill: tuple[int, int, int],
+) -> None:
+    x, y = xy
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    draw.text((x - tw / 2, y), text, font=font, fill=fill)
 
 
 def render_leaderboard_card(board: Leaderboard, period: Period) -> bytes:
-    c1, c2, accent, _ = _PALETTES[period]
-    img = _gradient((_WIDTH, _HEIGHT), c1, c2)
-    try:
-        _draw_orbs(img, accent)
-    except Exception:
-        pass
+    """2 zirve kutlama kartı — her iletide görsel varyasyon."""
+    rng = _rng_for(board, period)
+    img = _gradient_bg(rng, period)
     draw = ImageDraw.Draw(img)
 
-    title_f = _font(58, bold=True)
-    sub_f = _font(26, bold=True)
-    section_f = _font(24, bold=True)
-    name_f = _font(38, bold=True)
-    metric_f = _font(32, bold=True)
-    small_f = _font(22)
-    badge_f = _font(28, bold=True)
-    hero_f = _font(34, bold=True)
+    gold = _hsv(0.12 + rng.uniform(-0.02, 0.02), 0.55, 0.95)
+    gold_dark = _hsv(0.11, 0.65, 0.75)
+    cream = (255, 248, 230)
+    white = (255, 255, 255)
 
-    window = board.window_label or period.window_label
+    # ışınlar + confetti (bazen arkada)
+    if rng.random() < 0.85:
+        _draw_rays(draw, rng, gold)
+    _draw_confetti(draw, rng, gold)
 
-    # Header
-    draw.text((56, 48), period.title, font=title_f, fill=(255, 255, 255))
-    draw.text(
-        (56, 120),
-        f"{board.date_label}    ·    {window}",
-        font=sub_f,
-        fill=(255, 255, 255),
-    )
-
-    # Hero strip — zirve isimleri
-    hero_y = 175
     call = board.call_leader
     talk = board.talk_leader
-    hero_box = (40, hero_y, _WIDTH - 40, hero_y + 150)
-    draw.rounded_rectangle(hero_box, radius=28, fill=(0, 0, 0, 0))
-    # semi-transparent dark glass
-    glass = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    gd = ImageDraw.Draw(glass)
-    gd.rounded_rectangle(hero_box, radius=28, fill=(20, 15, 30, 90))
-    img = Image.alpha_composite(img.convert("RGBA"), glass).convert("RGB")
-    draw = ImageDraw.Draw(img)
+    window = board.window_label or period.window_label
 
-    if call or talk:
-        line1 = ""
-        if call:
-            line1 = (
-                f"ÇAĞRI  ·  {_display_name(call.name).upper()}  ·  {call.call_count}"
-            )
-        line2 = ""
-        if talk:
-            line2 = (
-                f"SÜRE  ·  {_display_name(talk.name).upper()}  ·  {talk.talk_label}"
-            )
-        if line1:
-            draw.text((64, hero_y + 32), _truncate(draw, line1, hero_f, _WIDTH - 140), font=hero_f, fill=(255, 255, 255))
-        if line2:
-            draw.text((64, hero_y + 88), _truncate(draw, line2, hero_f, _WIDTH - 140), font=hero_f, fill=accent)
-    else:
-        draw.text((64, hero_y + 55), "Bu dilimde henüz veri yok", font=hero_f, fill=(255, 255, 255))
-
-    # White panel
-    panel_top = 360
-    panel = (36, panel_top, _WIDTH - 36, _HEIGHT - 40)
-    draw.rounded_rectangle(panel, radius=36, fill=(250, 250, 252))
-    # top accent bar on panel
-    draw.rounded_rectangle(
-        (36, panel_top, _WIDTH - 36, panel_top + 10),
-        radius=6,
-        fill=accent,
-    )
-
-    y = panel_top + 48
-    left = 80
-    content_w = _WIDTH - left - 80
-
-    def section(
-        title: str,
-        rows: list[tuple[str, str]],
-        accent_color: tuple[int, int, int],
-    ) -> int:
-        nonlocal y
-        # chip
-        draw.rounded_rectangle((left, y, left + 12, y + 32), radius=5, fill=accent_color)
-        draw.text((left + 26, y + 2), title, font=section_f, fill=(45, 45, 55))
-        y += 52
-
-        if not rows:
-            draw.text(
-                (left + 8, y),
-                "Bu dilimde veri yok",
-                font=name_f,
-                fill=(160, 160, 170),
-            )
-            y += 72
-            return y
-
-        for i, (name, metric) in enumerate(rows):
-            rank = i + 1
-            row_h = 96
-            row_top = y
-            row_bot = y + row_h
-            # alternating soft rows
-            bg = (245, 246, 250) if i % 2 == 0 else (255, 255, 255)
-            # gold tint for #1
-            if rank == 1:
-                bg = (255, 248, 230)
-            draw.rounded_rectangle(
-                (left - 20, row_top, left + content_w + 20, row_bot),
-                radius=20,
-                fill=bg,
-            )
-            # left accent
-            if rank == 1:
-                draw.rounded_rectangle(
-                    (left - 20, row_top + 12, left - 12, row_bot - 12),
-                    radius=4,
-                    fill=accent_color,
-                )
-
-            _draw_rank_badge(draw, (left + 32, row_top + row_h // 2), rank, badge_f)
-            name_txt = _truncate(
-                draw, _display_name(name), name_f, content_w - 120
-            )
-            draw.text(
-                (left + 78, row_top + 18),
-                name_txt,
-                font=name_f,
-                fill=(25, 25, 35),
-            )
-            draw.text(
-                (left + 78, row_top + 56),
-                metric,
-                font=metric_f,
-                fill=accent_color if rank == 1 else (90, 90, 110),
-            )
-            y = row_bot + 12
-
-        y += 16
-        return y
-
-    call_rows = [
-        (_display_name(a.name), f"{a.call_count} çağrı") for a in board.by_calls
-    ]
-    talk_rows = [(_display_name(a.name), a.talk_label) for a in board.by_talk]
-
-    y = section("EN ÇOK ÇAĞRI", call_rows, c1)
-    draw.line((left, y, left + content_w, y), fill=(230, 230, 236), width=2)
-    y += 28
-    y = section("EN UZUN TOPLAM KONUŞMA", talk_rows, c2)
-
-    # Footer slogan
-    slogans = {
-        Period.SABAH: "Kimler zirveyi hedefliyor?",
-        Period.OGLEN: "Bar yükseldi — devam!",
-        Period.AKSAM: "Bugünün efsaneleri bunlar.",
+    # Başlık
+    title_font = _font(42, bold=True)
+    sub_font = _font(24, bold=True)
+    period_titles = {
+        Period.SABAH: "Sabah Zirvesi",
+        Period.OGLEN: "Öğle Zirvesi",
+        Period.AKSAM: "Akşam Zirvesi",
     }
-    draw.text(
-        (left, _HEIGHT - 100),
-        slogans[period],
-        font=sub_f,
-        fill=(100, 100, 115),
+    _center_text(draw, (_WIDTH // 2, 36), period_titles[period].upper(), sub_font, gold)
+    _center_text(
+        draw,
+        (_WIDTH // 2, 70),
+        f"{board.date_label}  ·  {window}",
+        _font(20),
+        (220, 220, 230),
     )
-    draw.text(
-        (left, _HEIGHT - 62),
-        f"Top 3  ·  {window}",
-        font=small_f,
-        fill=(150, 150, 160),
+
+    # TEBRİKLER satırı
+    tebrik_font = _font(52, bold=True)
+    _center_text(draw, (_WIDTH // 2, 120), "Tebrikler", tebrik_font, cream)
+
+    # İsimler satırı: Name & Name  veya tek isim
+    names: list[str] = []
+    if call:
+        names.append(_display_name(call.name))
+    if talk and (not call or talk.name.lower() != call.name.lower()):
+        names.append(_display_name(talk.name))
+    elif talk and call and talk.name.lower() == call.name.lower():
+        # aynı kişi duble
+        names = [_display_name(call.name)]
+
+    if not names:
+        name_line = "Bugün henüz zirve yok"
+    elif len(names) == 1:
+        name_line = f"{names[0]}!"
+    else:
+        joiner = rng.choice([" & ", "  ·  ", "  ✦  "])
+        name_line = f"{names[0]}{joiner}{names[1]}!"
+
+    name_font, name_line = _fit_text(draw, name_line, 56, _WIDTH - 100, bold=True)
+    _center_text(draw, (_WIDTH // 2, 190), name_line, name_font, cream)
+
+    # İki cam kart
+    card_w, card_h = 480, 320
+    gap = 40
+    total_w = card_w * 2 + gap
+    start_x = (_WIDTH - total_w) // 2
+    card_y = 320
+
+    slots: list[tuple[str, str, str, AgentStats | None]] = [
+        (
+            "1",
+            call_royal_label(call.name) if call else "Çağrı adedi",
+            f"{call.call_count} çağrı" if call else "—",
+            call,
+        ),
+        (
+            "2",
+            talk_royal_label(talk.name) if talk else "Konuşma süresi",
+            talk.talk_label if talk else "—",
+            talk,
+        ),
+    ]
+
+    # layout varyasyonu: yan yana (default) veya hafif offset
+    y_offsets = [0, 0]
+    if rng.random() < 0.35:
+        y_offsets = [rng.randint(-12, 12), rng.randint(-12, 12)]
+
+    for i, (_num, title, metric, agent) in enumerate(slots):
+        x0 = start_x + i * (card_w + gap)
+        y0 = card_y + y_offsets[i]
+        box = (x0, y0, x0 + card_w, y0 + card_h)
+        _rounded_glass(img, box, rng)
+        draw = ImageDraw.Draw(img)
+
+        # kupa dairesi
+        cx = x0 + card_w // 2
+        cy = y0 + 70
+        draw.ellipse((cx - 42, cy - 42, cx + 42, cy + 42), fill=(255, 255, 255))
+        draw.ellipse((cx - 38, cy - 38, cx + 38, cy + 38), fill=(255, 250, 235))
+        _draw_trophy(draw, cx, cy + 4, 1.0, gold_dark)
+
+        # unvan
+        tfont = _font(20, bold=True)
+        _center_text(draw, (cx, y0 + 130), title, tfont, (80, 70, 50))
+
+        # isim
+        aname = _display_name(agent.name).upper() if agent else "—"
+        nfont, aname = _fit_text(draw, aname, 36, card_w - 40, bold=True)
+        _center_text(draw, (cx, y0 + 175), aname, nfont, (30, 30, 40))
+
+        # metrik
+        mfont = _font(28, bold=True)
+        _center_text(draw, (cx, y0 + 230), metric, mfont, gold_dark)
+
+        # küçük alt etiket
+        _center_text(
+            draw,
+            (cx, y0 + 275),
+            "ZİRVE" if i == 0 else "ZİRVE",
+            _font(16, bold=True),
+            (140, 130, 110),
+        )
+
+    # alt alkış satırı
+    draw = ImageDraw.Draw(img)
+    foot = rng.choice(
+        [
+            "Tüm ekip sizleri kutluyor  ",
+            "Öncüler burada  ",
+            "Alkışlar sizin  ",
+            "Bu tempo ilham veriyor  ",
+        ]
     )
+    _center_text(draw, (_WIDTH // 2, _HEIGHT - 70), foot, _font(24, bold=True), cream)
+    _center_text(
+        draw,
+        (_WIDTH // 2, _HEIGHT - 38),
+        "Top 3 detayı metinde",
+        _font(18),
+        (200, 200, 210),
+    )
+
+    # üst confetti biraz daha (öne)
+    if rng.random() < 0.7:
+        _draw_confetti(draw, rng, gold)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

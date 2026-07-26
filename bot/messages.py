@@ -168,27 +168,36 @@ def build_caption(board: Leaderboard, period: Period, *, now: datetime | None = 
         "",
     ]
 
-    if call:
-        # Zirve isimleri BÜYÜK HARF (dikkat çekici)
-        line = rng.choice(_CALL_LINES[period]).format(
-            name=_display_name(call.name).upper()
+    from bot.gender import is_female_name
+
+    def _call_title(n: str) -> str:
+        return "Çağrı adedi kraliçesi" if is_female_name(n) else "Çağrı adedi kralı"
+
+    def _talk_title(n: str) -> str:
+        return (
+            "Konuşma süresi kraliçesi"
+            if is_female_name(n)
+            else "Konuşma süresi kralı"
         )
-        parts.append(line)
+
+    if call:
+        parts.append(
+            f"⚡️ <b>{_call_title(call.name)}</b>: "
+            f"<b>{_display_name(call.name).upper()}</b>"
+        )
         parts.append(f"<b>{call.call_count}</b> görüşme")
 
     if talk:
+        parts.append("")
         if call and talk.name.lower() == call.name.lower():
-            parts.append("")
             parts.append(
                 f"👑 <b>Duble zirve!</b> {_display_name(talk.name).upper()} "
-                f"hem çağrıda hem konuşmada önde · <b>{talk.talk_label}</b>"
+                f"hem çağrı hem konuşmada · <b>{talk.talk_label}</b>"
             )
         else:
-            parts.append("")
             parts.append(
-                rng.choice(_TALK_LINES[period]).format(
-                    name=_display_name(talk.name).upper()
-                )
+                f"🎧 <b>{_talk_title(talk.name)}</b>: "
+                f"<b>{_display_name(talk.name).upper()}</b>"
             )
             parts.append(f"Toplam: <b>{talk.talk_label}</b>")
 

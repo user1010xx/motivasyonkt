@@ -65,6 +65,8 @@ _FEMALE = {
     "aylin",
     "ayca",
     "ayça",
+    "burcin",
+    "burçin",
     "banu",
     "bahar",
     "berna",
