@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from bot.config import Settings, load_settings
+from bot.dates import DateParseError, parse_day_arg
 from bot.models import Period
 from bot.service import MotivationService
 from bot.toniva_client import TonivaClient
@@ -66,13 +67,17 @@ async def _send_period(
     *,
     chat_id: str | int,
     reply_to: int | None = None,
+    day=None,
 ) -> None:
+    from datetime import date as date_cls
+
     service: MotivationService = context.application.bot_data["service"]
     settings: Settings = context.application.bot_data["settings"]
+    target_day: date_cls | None = day
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_PHOTO)
     try:
-        _board, caption, image = await service.build(period)
+        _board, caption, image = await service.build(period, day=target_day)
     except Exception as exc:
         logger.exception("Motivasyon üretilemedi: %s", exc)
         # HTML'de kırılmasın
@@ -123,10 +128,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Merhaba! 🎯 Toniva motivasyon botu hazır.\n\n"
         f"Komutlar ({where}):\n"
-        "/sabah — sabah motivasyon + liderlik kartı\n"
-        "/oglen — öğlen motivasyon + liderlik kartı\n"
-        "/aksam — akşam motivasyon + liderlik kartı\n"
-        "/test — hızlı deneme (öğlen şablonu)\n"
+        "/sabah — bugünün sabah kartı\n"
+        "/sabah dün — dünün verisi\n"
+        "/sabah 26.07.2026 — belirli gün\n"
+        "/oglen · /aksam — aynı şekilde tarih alabilir\n"
+        "/debug · /debug dün — Toniva alan özeti\n"
+        "/test — hızlı deneme\n"
         "/durum — ayar özeti\n\n"
         "• Özelden sadece yetkili kullanıcıya yanıt verir.\n"
         "• Eklendiğin gruplarda komut çalıştırabilirsin.\n"
@@ -167,10 +174,15 @@ async def _period_command(
     if await _reject_if_not_admin(update, settings):
         return
 
-    # Komut nerede yazıldıysa oraya gönder (özel veya grup)
+    try:
+        day = parse_day_arg(context.args, timezone=settings.timezone)
+    except DateParseError as exc:
+        await update.effective_message.reply_text(str(exc))
+        return
+
     target_chat = update.effective_chat.id
     status = await update.effective_message.reply_text(
-        f"⏳ {period.label} motivasyonu hazırlanıyor…"
+        f"⏳ {period.label} · {day.strftime('%d.%m.%Y')} hazırlanıyor…"
     )
     try:
         await _send_period(
@@ -178,6 +190,7 @@ async def _period_command(
             period,
             chat_id=target_chat,
             reply_to=update.effective_message.message_id,
+            day=day,
         )
     finally:
         try:
@@ -212,17 +225,22 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reject_if_not_admin(update, settings):
         return
 
-    status = await update.effective_message.reply_text("🔍 Toniva rapor özeti alınıyor…")
     try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
+        day = parse_day_arg(context.args, timezone=settings.timezone)
+    except DateParseError as exc:
+        await update.effective_message.reply_text(str(exc))
+        return
 
-        day = datetime.now(ZoneInfo(settings.timezone)).date()
+    status = await update.effective_message.reply_text(
+        f"🔍 Toniva özeti · {day.strftime('%d.%m.%Y')}…"
+    )
+    try:
         text = await service.toniva.debug_reports(day, day)
-        # Telegram mesaj limiti
         if len(text) > 3500:
             text = text[:3490] + "\n…"
-        await update.effective_message.reply_text(f"<pre>{text}</pre>", parse_mode=ParseMode.HTML)
+        await update.effective_message.reply_text(
+            f"<pre>{text}</pre>", parse_mode=ParseMode.HTML
+        )
     except Exception as exc:
         await update.effective_message.reply_text(f"Debug hata: {exc}")
     finally:

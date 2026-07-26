@@ -31,5 +31,7 @@ _preview/
 scripts/_smoke_out/
 *.log
 
+# Fonts ARE committed (Railway Turkish glyphs) — do not ignore bot/assets/fonts/
+
 # Optional local docs dumps (API screenshots — not required for deploy)
 # toniva dokument/

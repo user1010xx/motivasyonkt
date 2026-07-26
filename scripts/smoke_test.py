@@ -25,6 +25,19 @@ from bot.toniva_client import (
 )
 
 
+def test_dates() -> None:
+    from datetime import date, timedelta
+    from bot.dates import parse_day_arg, today_in_tz
+
+    today = today_in_tz("Europe/Istanbul")
+    assert parse_day_arg([], timezone="Europe/Istanbul") == today
+    assert parse_day_arg(["dün"], timezone="Europe/Istanbul") == today - timedelta(days=1)
+    assert parse_day_arg(["dun"], timezone="Europe/Istanbul") == today - timedelta(days=1)
+    assert parse_day_arg(["26.07.2026"], timezone="Europe/Istanbul") == date(2026, 7, 26)
+    assert parse_day_arg(["2026-07-26"], timezone="Europe/Istanbul") == date(2026, 7, 26)
+    print("OK dates")
+
+
 def test_parsers() -> None:
     perf = {
         "rows": [
@@ -108,6 +121,7 @@ async def test_service_mock() -> None:
 
 
 def main() -> None:
+    test_dates()
     test_parsers()
     test_cards_and_messages()
     asyncio.run(test_service_mock())
