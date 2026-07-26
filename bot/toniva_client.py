@@ -155,19 +155,19 @@ def _as_name(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, dict):
+        # first + last önce (firstName tek başına isim sanılmasın)
+        first = value.get("firstName") or value.get("first_name") or value.get("ad")
+        last = value.get("lastName") or value.get("last_name") or value.get("soyad")
+        if first or last:
+            return f"{first or ''} {last or ''}".strip() or None
+        for k in ("name", "fullName", "full_name", "displayName", "label", "title", "username"):
+            if value.get(k):
+                return str(value[k]).strip() or None
         nested = _pick(value, _NAME_KEYS)
         if nested is not None and not isinstance(nested, dict):
             text = str(nested).strip()
             if text:
                 return text
-        # first + last
-        first = value.get("firstName") or value.get("first_name") or value.get("ad")
-        last = value.get("lastName") or value.get("last_name") or value.get("soyad")
-        if first or last:
-            return f"{first or ''} {last or ''}".strip() or None
-        for k in ("name", "label", "title", "username", "email"):
-            if value.get(k):
-                return str(value[k]).strip() or None
         return None
     if isinstance(value, (int, float)):
         # Saf id isim değildir
