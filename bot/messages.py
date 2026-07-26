@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import random
+import secrets
 from datetime import datetime
 
 from bot.models import Leaderboard, Period
 
 
 def _display_name(name: str) -> str:
-    """Kart/metin için isim: baş harfler büyük, Türkçe uyumlu."""
     if not name:
         return ""
-    # Basit title; TR karakterler için casefold yerine capitalize kelime kelime
     parts = []
     for w in str(name).replace("_", " ").split():
         if not w:
@@ -21,7 +20,7 @@ def _display_name(name: str) -> str:
 
 
 def _seeded_rng(board: Leaderboard, period: Period) -> random.Random:
-    """Aynı gün+dönem+liderlerde tutarlı; gün değişince metin değişir."""
+    """Başlık çeşitliliği için (aynı gün aynı lider → benzer ton)."""
     key = (
         f"{board.date_label}|{period.value}|"
         f"{board.call_leader.name if board.call_leader else ''}|"
@@ -31,7 +30,11 @@ def _seeded_rng(board: Leaderboard, period: Period) -> random.Random:
     return random.Random(seed)
 
 
-# Dönem başlık altı kısa sloganlar
+def _fresh_choice(items: list[str]) -> str:
+    """Her mesajda gerçekten rastgele — aynı cümleye yapışmasın."""
+    return items[secrets.randbelow(len(items))]
+
+
 _HEADERS: dict[Period, list[str]] = {
     Period.SABAH: [
         "Sabah ateşi yakıldı",
@@ -39,13 +42,16 @@ _HEADERS: dict[Period, list[str]] = {
         "Sabah temposu konuşuyor",
         "Kahveyle birlikte liderlik",
         "İlk yarıda öne çıkanlar",
+        "Sabahın yıldızları netleşti",
+        "Erken kalkanın kazancı",
     ],
     Period.OGLEN: [
         "Öğle skoru açıklandı",
         "Günün ortasında bar yükseldi",
         "Öğle zirvesi netleşti",
-        "Tempo düşmedi, lider değişti mi?",
+        "Tempo düşmedi",
         "İkinci yarıya ateşli giriş",
+        "Öğlen rüzgarı esti",
     ],
     Period.AKSAM: [
         "Akşam tacı sahiplerini buldu",
@@ -53,49 +59,7 @@ _HEADERS: dict[Period, list[str]] = {
         "Bugünün son skoru",
         "Kapanışta alkışlar",
         "Yarına taşınacak isimler",
-    ],
-}
-
-_CALL_LINES: dict[Period, list[str]] = {
-    Period.SABAH: [
-        "⚡️ Sabah diliminin zirvesi: <b>{name}</b>",
-        "📞 Çağrıda önde giden: <b>{name}</b>",
-        "🚀 En çok arayan: <b>{name}</b>",
-        "🔥 Sabahın çağrı yıldızı: <b>{name}</b>",
-        "👑 Çağrı tahtında: <b>{name}</b>",
-    ],
-    Period.OGLEN: [
-        "⚡️ Öğle diliminin zirvesi: <b>{name}</b>",
-        "📞 Çağrıda bir numara: <b>{name}</b>",
-        "🚀 Tempo kralı/kraliçesi: <b>{name}</b>",
-        "🔥 Öğlenin çağrı yıldızı: <b>{name}</b>",
-    ],
-    Period.AKSAM: [
-        "⚡️ Günün çağrı zirvesi: <b>{name}</b>",
-        "📞 En çok görüşen: <b>{name}</b>",
-        "👑 Akşamın çağrı efsanesi: <b>{name}</b>",
-        "🏁 Çağrıda bayrağı alan: <b>{name}</b>",
-    ],
-}
-
-_TALK_LINES: dict[Period, list[str]] = {
-    Period.SABAH: [
-        "🎧 Sabahın en uzun soluğu: <b>{name}</b>",
-        "⏱ Toplam konuşmada zirve: <b>{name}</b>",
-        "🎙 En çok dinlenen ses: <b>{name}</b>",
-        "💬 Konuşma süresinde önde: <b>{name}</b>",
-    ],
-    Period.OGLEN: [
-        "🎧 Öğlenin en uzun soluğu: <b>{name}</b>",
-        "⏱ Konuşmada zirve: <b>{name}</b>",
-        "🎙 Müşteriyle en uzun bağ: <b>{name}</b>",
-        "💬 Süre tahtında: <b>{name}</b>",
-    ],
-    Period.AKSAM: [
-        "🎧 Günün en uzun soluğu: <b>{name}</b>",
-        "⏱ Toplam konuşma zirvesi: <b>{name}</b>",
-        "🎙 Akşamın sesi: <b>{name}</b>",
-        "💬 Konuşmada efsane: <b>{name}</b>",
+        "Günün kapanış zili",
     ],
 }
 
@@ -106,16 +70,38 @@ _APPLAUSE: list[str] = [
     "Siz fark yaratıyorsunuz; tüm ekip gurur duyuyor 👏",
     "Zirve sizin, alkışlar sizin 👏✨",
     "Bu enerji bulaşıcı — tebrikler öncüler 👏💪",
+    "Emek görünür oldu, bravo 👏",
+    "Sahayı ısıtan isimler bunlardı 👏🔥",
+    "Standart yükseldi — tebrikler 👏",
+    "Bugünün ilham kaynağı sizsiniz 👏✨",
 ]
 
+# "Kimler zirveyi hedefliyor?" bilinçli olarak YOK / nadiren değil — hiç yok
 _CLOSINGS: list[str] = [
-    "Kimler zirveyi hedefliyor?",
-    "Sıradaki isim kim olacak?",
-    "Bar yükseldi — kim yaklaşacak?",
-    "Rekabet kızıştı, hazır mısınız?",
-    "Yarın yeni sayfa; bugün kim iz bıraktı?",
-    "Zirve boş değil — kovalamaca devam 🔥",
-    "Ekipçe yukarı — sıradaki rekor kimin?",
+    "Sıradaki rekor kimin?",
+    "Bar yükseldi — devam!",
+    "Rekabet kızıştı 🔥",
+    "Yarın yeni sayfa açılıyor",
+    "Tempo düşmesin!",
+    "Ekipçe daha yükseğe 💪",
+    "Bu sadece ısınma turu muydu?",
+    "Zirve boş kalmaz",
+    "Kovalamaca sürüyor",
+    "Bir sonraki dilimde görüşürüz",
+    "Alkışlar buraya kadar değil — devam 👏",
+    "Rakipler uyandı mı?",
+    "Bugün iz bırakanlar bunlar",
+    "Yarına güç katın",
+    "Odak, hız, disiplin — devam",
+    "Sahne sizin, tempo sizin",
+    "Harika iş — ekip yükseldi",
+    "Bu enerji kalsın",
+    "Zirve sevenlere selam 👑",
+    "Devam, mola sonra!",
+    "Bir adım daha — kim atacak?",
+    "Günün yıldızları belli oldu ⭐",
+    "Tebrikler, durmak yok",
+    "Hadi ekip, rüzgar sizinle",
 ]
 
 
@@ -146,7 +132,6 @@ def _top_block(board: Leaderboard) -> str:
 
 
 def build_caption(board: Leaderboard, period: Period, *, now: datetime | None = None) -> str:
-    """Kısa, dikkat çekici, gün/dönem bazlı değişken metin."""
     rng = _seeded_rng(board, period)
     call = board.call_leader
     talk = board.talk_leader
@@ -202,17 +187,16 @@ def build_caption(board: Leaderboard, period: Period, *, now: datetime | None = 
             parts.append(f"Toplam: <b>{talk.talk_label}</b>")
 
     parts.append("")
-    parts.append(rng.choice(_APPLAUSE))
+    parts.append(_fresh_choice(_APPLAUSE))
     parts.append("")
     parts.append(_top_block(board))
     parts.append("")
-    parts.append(rng.choice(_CLOSINGS))
+    parts.append(_fresh_choice(_CLOSINGS))
 
     if board.source == "mock":
         parts.append("\n<i>🧪 MOCK</i>")
 
     text = "\n".join(parts)
-    # Telegram caption ~1024
     if len(text) > 1000:
         text = text[:997] + "…"
     return text
