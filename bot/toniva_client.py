@@ -215,17 +215,87 @@ MOCK_AGENTS = [
 ]
 
 
+class TonivaApiError(RuntimeError):
+    """Toniva HTTP / iş kuralı hatası — Telegram'da okunabilir mesaj."""
+
+    def __init__(self, message: str, *, status: int | None = None, code: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def _format_toniva_error(resp: httpx.Response, endpoint: str) -> TonivaApiError:
+    status = resp.status_code
+    code = None
+    message = None
+    required_scope = None
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            code = body.get("code") or body.get("error_code")
+            message = body.get("message") or body.get("error")
+            required_scope = body.get("required_scope")
+    except Exception:
+        message = (resp.text or "")[:200]
+
+    # Bilinen CRM kodları (dokümantasyon)
+    hints = {
+        "CRM-2090": "API anahtarı header'da yok.",
+        "CRM-2091": "API anahtarı geçersiz veya bozuk (tva_... kontrol et).",
+        "CRM-2093": "IP whitelist: Railway çıkış IP'si Toniva'da izinli değil.",
+        "CRM-2094": "Rate limit aşıldı (100/dk).",
+        "CRM-2095": "Tenant pasif veya askıya alınmış.",
+        "CRM-2336": "Yetersiz scope — anahtara reports:read ekle.",
+        "CRM-4030": "Tenant feature kapalı.",
+    }
+
+    if status == 401:
+        tip = hints.get(str(code), "Token/key hatalı. TONIVA_API_KEY değerini kontrol et.")
+    elif status == 403:
+        tip = hints.get(
+            str(code),
+            "Yetki reddedildi. reports:read scope veya IP whitelist kontrol et.",
+        )
+    elif status == 429:
+        retry = resp.headers.get("Retry-After", "?")
+        tip = f"Rate limit. Retry-After: {retry}s"
+    else:
+        tip = "Toniva isteği başarısız."
+
+    parts = [
+        f"Toniva {status} ({endpoint})",
+    ]
+    if code:
+        parts.append(f"kod: {code}")
+    if message:
+        parts.append(str(message))
+    if required_scope:
+        parts.append(f"gerekli scope: {required_scope}")
+    parts.append(tip)
+
+    return TonivaApiError(" | ".join(parts), status=status, code=str(code) if code else None)
+
+
 class TonivaClient:
     def __init__(self, base_url: str, api_key: str, mock_mode: bool = False) -> None:
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
+        self.api_key = (api_key or "").strip()
         self.mock_mode = mock_mode
 
     def _headers(self) -> dict[str, str]:
+        # Dokümantasyon: Authorization: Bearer tva_... (önerilen)
         return {
             "Authorization": f"Bearer {self.api_key}",
+            "X-API-Key": self.api_key,
             "Accept": "application/json",
         }
+
+    async def _get_report(
+        self, client: httpx.AsyncClient, slug: str, params: dict[str, str]
+    ) -> httpx.Response:
+        url = f"{self.base_url}/reports/{slug}"
+        resp = await client.get(url, headers=self._headers(), params=params)
+        return resp
 
     async def fetch_agent_stats(
         self, start: date, end: date
@@ -234,6 +304,11 @@ class TonivaClient:
             logger.warning("MOCK_MODE aktif — örnek personel verisi kullanılıyor.")
             return list(MOCK_AGENTS), "mock"
 
+        if not self.api_key.startswith("tva_"):
+            logger.warning(
+                "TONIVA_API_KEY 'tva_' ile başlamıyor — yine de deneniyor."
+            )
+
         params = {
             "startDate": start.isoformat(),
             "endDate": end.isoformat(),
@@ -241,33 +316,37 @@ class TonivaClient:
 
         async with httpx.AsyncClient(timeout=45.0) as client:
             # 1) performance raporu
-            perf_url = f"{self.base_url}/reports/performance"
-            try:
-                resp = await client.get(perf_url, headers=self._headers(), params=params)
-                if resp.status_code == 429:
-                    retry = resp.headers.get("Retry-After", "?")
-                    raise RuntimeError(f"Toniva rate limit (429). Retry-After: {retry}s")
-                resp.raise_for_status()
-                agents = parse_performance_rows(resp.json())
+            perf = await self._get_report(client, "performance", params)
+            if perf.status_code == 200:
+                perf_body = perf.json()
+                agents = parse_performance_rows(perf_body)
                 if agents:
                     return agents, "performance"
                 logger.warning(
-                    "performance raporu boş veya alanlar eşleşmedi; conversations deneniyor."
+                    "performance 200 ama satır/alan eşleşmedi; conversations deneniyor. "
+                    "body_keys=%s",
+                    list(perf_body.keys()) if isinstance(perf_body, dict) else type(perf_body),
                 )
-            except Exception as exc:
-                logger.exception("performance raporu alınamadı: %s", exc)
+            elif perf.status_code in (401, 403):
+                # Auth hatası — ikinci endpoint de aynı key ile fail olur
+                raise _format_toniva_error(perf, "reports/performance")
+            elif perf.status_code == 429:
+                raise _format_toniva_error(perf, "reports/performance")
+            else:
+                logger.warning(
+                    "performance HTTP %s — conversations yedeği deneniyor.",
+                    perf.status_code,
+                )
 
             # 2) yedek: conversations
-            conv_url = f"{self.base_url}/reports/conversations"
-            resp = await client.get(conv_url, headers=self._headers(), params=params)
-            if resp.status_code == 429:
-                retry = resp.headers.get("Retry-After", "?")
-                raise RuntimeError(f"Toniva rate limit (429). Retry-After: {retry}s")
-            resp.raise_for_status()
-            agents = parse_conversations_rows(resp.json())
+            conv = await self._get_report(client, "conversations", params)
+            if conv.status_code != 200:
+                raise _format_toniva_error(conv, "reports/conversations")
+
+            agents = parse_conversations_rows(conv.json())
             if not agents:
-                raise RuntimeError(
-                    "Toniva'dan personel verisi okunamadı. "
-                    "API yanıt alanlarını kontrol edin (reports:read)."
+                raise TonivaApiError(
+                    "Toniva yanıt verdi ama personel satırı çıkmadı. "
+                    "Rapor alan adları eşleşmiyor olabilir (reports:read OK görünüyor)."
                 )
             return agents, "conversations"

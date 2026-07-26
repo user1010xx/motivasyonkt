@@ -75,11 +75,17 @@ async def _send_period(
         _board, caption, image = await service.build(period)
     except Exception as exc:
         logger.exception("Motivasyon üretilemedi: %s", exc)
+        # HTML'de kırılmasın
+        detail = str(exc).replace("<", "&lt;").replace(">", "&gt;")
+        if len(detail) > 800:
+            detail = detail[:797] + "…"
         await context.bot.send_message(
             chat_id=chat_id,
             text=(
-                f"⚠️ <b>{period.label}</b> mesajı üretilemedi.\n"
-                f"<code>{type(exc).__name__}: {exc}</code>"
+                f"⚠️ <b>{period.label}</b> mesajı üretilemedi.\n\n"
+                f"{detail}\n\n"
+                "<i>Toniva 403 ise: API key scope (reports:read) veya "
+                "IP whitelist (Railway IP) kontrol et.</i>"
             ),
             parse_mode=ParseMode.HTML,
             reply_to_message_id=reply_to,
