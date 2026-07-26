@@ -68,23 +68,37 @@ def test_window_aggregate() -> None:
         {
             "agentName": "Elisa",
             "startTime": "2026-07-26T08:00:00",
-            "ringDuration": 50,  # ring sayılmamalı; talk yoksa 0
+            "ringDuration": 50,
             "talkSeconds": 600,
+        },
+        # Sadece tarih (saat yok) — dilime GİRMEMELİ (eski bug: tüm gün 00:00)
+        {
+            "agentName": "ghost",
+            "startTime": "2026-07-26",
+            "billsec": 999,
+        },
+        # ms süre
+        {
+            "agentName": "msuser",
+            "startTime": "2026-07-26 09:00:00",
+            "talkDurationMs": 90000,
         },
     ]
     agents, agg = aggregate_conversations_window(
         rows, day=day, cutoff=time(12, 0, 0), timezone="Europe/Istanbul"
     )
     by = {a.name: a for a in agents}
+    assert "ghost" not in by
     assert by["umit"].call_count == 2
     assert by["umit"].talk_seconds == 120 + 300
     assert by["Elisa"].call_count == 2
     assert by["Elisa"].talk_seconds == 300 + 600
-    assert agg["rows_in_window"] == 4
+    assert by["msuser"].talk_seconds == 90
+    assert agg["rows_no_time"] >= 1
     assert agg["rows_out_of_window"] == 1
 
-    # ring-only row
     assert _talk_seconds_from_row({"ringDuration": 99, "ring_time": 10}) == 0
+    assert _talk_seconds_from_row({"cdr": {"billsec": 45}}) == 45
     print("OK window aggregate")
 
 

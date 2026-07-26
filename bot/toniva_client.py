@@ -34,8 +34,14 @@ _NAME_KEYS = (
     "employeeName",
 )
 
-# Konuşma süresi — ring/wait/hold YOK
+# Konuşma süresi — ring/wait/hold YOK (öncelik sırası)
 _TALK_DURATION_KEYS = (
+    "billsec",
+    "billSec",
+    "billableSeconds",
+    "billable_seconds",
+    "billableDuration",
+    "billable_duration",
     "talkDuration",
     "talk_duration",
     "talkTime",
@@ -44,10 +50,8 @@ _TALK_DURATION_KEYS = (
     "talk_seconds",
     "talkDurationSeconds",
     "talk_duration_seconds",
-    "billableSeconds",
-    "billable_seconds",
-    "billsec",
-    "billSec",
+    "talkDurationMs",
+    "talk_duration_ms",
     "speakingTime",
     "speaking_time",
     "totalTalkTime",
@@ -62,6 +66,15 @@ _TALK_DURATION_KEYS = (
     "handle_time",
     "durationTalk",
     "duration_talk",
+    "bridgeDuration",
+    "bridge_duration",
+    "bridgedSeconds",
+    "inCallSeconds",
+    "in_call_seconds",
+    "konusmaSuresi",
+    "konusma_suresi",
+    "sure",
+    "talk",
 )
 
 # Genel duration — ring değilse yedek
@@ -69,13 +82,36 @@ _DURATION_FALLBACK_KEYS = (
     "duration",
     "durationSeconds",
     "duration_seconds",
+    "durationMs",
+    "duration_ms",
     "callDuration",
     "call_duration",
     "totalDuration",
     "total_duration",
     "length",
+    "len",
+    "seconds",
 )
 
+# Bitiş zamanı (süre = end - start)
+_END_TIME_KEYS = (
+    "endTime",
+    "end_time",
+    "endedAt",
+    "ended_at",
+    "hangupTime",
+    "hangup_time",
+    "hangupAt",
+    "hangup_at",
+    "finishTime",
+    "finish_time",
+    "stopTime",
+    "stop_time",
+    "callEnd",
+    "call_end",
+)
+
+# Saat içeren alanlar önce; çıplak "date" en sonda ve sadece clock varsa
 _TIME_KEYS = (
     "startTime",
     "start_time",
@@ -91,15 +127,20 @@ _TIME_KEYS = (
     "connected_at",
     "answerTime",
     "answer_time",
+    "answeredAt",
+    "answered_at",
     "timestamp",
     "createdAt",
     "created_at",
     "dateTime",
     "datetime",
+    "callDateTime",
+    "call_date_time",
     "callDate",
     "call_date",
+    "callTime",
+    "call_time",
     "time",
-    "date",
 )
 
 
@@ -124,20 +165,87 @@ def _as_int(value: Any) -> int:
     text = str(value).strip().replace(",", ".")
     if not text:
         return 0
-    if ":" in text:
+    if ":" in text and re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", text):
         parts = text.split(":")
-        if all(p.strip().replace(".", "", 1).isdigit() for p in parts):
-            nums = [int(float(p)) for p in parts]
-            if len(nums) == 3:
-                h, m, s = nums
-                return h * 3600 + m * 60 + s
-            if len(nums) == 2:
-                m, s = nums
-                return m * 60 + s
+        nums = [int(float(p)) for p in parts]
+        if len(nums) == 3:
+            h, m, s = nums
+            return h * 3600 + m * 60 + s
+        if len(nums) == 2:
+            m, s = nums
+            return m * 60 + s
+    # "1m 40s" / "1 sa 2 dk"
+    lower = text.lower()
+    if any(x in lower for x in ("sa", "dk", "sn", "h", "m", "s")):
+        total = 0
+        for m in re.finditer(r"(\d+)\s*sa", lower):
+            total += int(m.group(1)) * 3600
+        for m in re.finditer(r"(\d+)\s*h\b", lower):
+            total += int(m.group(1)) * 3600
+        for m in re.finditer(r"(\d+)\s*dk", lower):
+            total += int(m.group(1)) * 60
+        for m in re.finditer(r"(\d+)\s*m\b", lower):
+            total += int(m.group(1)) * 60
+        for m in re.finditer(r"(\d+)\s*sn", lower):
+            total += int(m.group(1))
+        for m in re.finditer(r"(\d+)\s*s\b", lower):
+            total += int(m.group(1))
+        if total:
+            return total
     try:
         return int(float(text))
     except ValueError:
         return 0
+
+
+def _to_seconds(value: Any, *, key: str = "") -> int:
+    """Sayı/ms/dk → saniye."""
+    sec = _as_int(value)
+    if sec <= 0:
+        return 0
+    kl = key.lower()
+    if "ms" in kl or "millis" in kl:
+        return max(0, sec // 1000)
+    if "minute" in kl or kl.endswith("_min") or kl.endswith("min"):
+        return sec * 60
+    # Ham sayı çok büyükse ms olabilir (1 günden uzun tek çağrı nadir)
+    if sec > 24 * 3600 and "ms" not in kl:
+        # 90_000 → muhtemel 90 sn ms
+        if sec > 100_000:
+            return sec // 1000
+    return sec
+
+
+def _flatten(obj: Any, prefix: str = "") -> dict[str, Any]:
+    """İç içe dict'i düz anahtarlara çevir (a.b.c)."""
+    out: dict[str, Any] = {}
+    if not isinstance(obj, dict):
+        return out
+    for k, v in obj.items():
+        key = f"{prefix}.{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            out.update(_flatten(v, key))
+        else:
+            out[key] = v
+            out[str(k)] = v  # kısa ad da erişilebilir
+    return out
+
+
+def _text_has_clock(text: str) -> bool:
+    """Tarih string'inde saat bileşeni var mı? (sadece gün değil)."""
+    t = text.strip()
+    if re.search(r"T\d{1,2}:\d{2}", t):
+        return True
+    if re.search(r"\s\d{1,2}:\d{2}", t):
+        return True
+    if re.fullmatch(r"\d{1,2}:\d{2}(:\d{2})?", t):
+        return True
+    # sadece 2026-07-26 veya 26.07.2026
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", t):
+        return False
+    if re.fullmatch(r"\d{1,2}[./]\d{1,2}[./]\d{2,4}", t):
+        return False
+    return bool(re.search(r"\d{1,2}:\d{2}", t))
 
 
 def _as_name(value: Any) -> str | None:
@@ -211,68 +319,106 @@ def _is_ring_or_wait_key(key: str) -> bool:
 
 def _talk_seconds_from_row(row: dict[str, Any]) -> int:
     """Tek görüşmenin konuşma süresi (saniye). Ring/wait hariç."""
-    candidates = [row]
-    for nest in ("metrics", "stats", "summary", "data", "cdr", "call"):
+    flat = _flatten(row)
+    candidates = [row, flat]
+    for nest in ("metrics", "stats", "summary", "data", "cdr", "call", "recording"):
         v = row.get(nest)
         if isinstance(v, dict):
             candidates.append(v)
 
-    # 1) Bilinen talk/billsec alanları
-    for c in candidates:
-        for key in _TALK_DURATION_KEYS:
-            if _is_ring_or_wait_key(key):
-                continue
-            val = _pick(c, (key,))
-            if val is not None:
-                sec = _as_int(val)
-                # dakika cinsinden gelebilir (alan adında min)
-                if "min" in key.lower() and sec < 500 and sec > 0:
-                    # talkMinutes gibi
-                    if "minute" in key.lower() or key.lower().endswith("min"):
-                        sec = sec * 60
-                if sec > 0:
-                    return sec
+    def _scan_keys(keys: tuple[str, ...]) -> int:
+        for c in candidates:
+            for key in keys:
+                if _is_ring_or_wait_key(key):
+                    continue
+                val = _pick(c, (key,)) if isinstance(c, dict) else None
+                if val is None and isinstance(c, dict):
+                    # flatten kısa ad
+                    val = c.get(key)
+                if val is not None and val != "":
+                    sec = _to_seconds(val, key=key)
+                    if sec > 0:
+                        return sec
+        return 0
 
-    # 2) Fuzzy: talk/bill/speak içeren key
+    sec = _scan_keys(_TALK_DURATION_KEYS)
+    if sec > 0:
+        return sec
+
+    # Fuzzy: talk/bill/speak/sure/konus
     for c in candidates:
+        if not isinstance(c, dict):
+            continue
         for k, v in c.items():
             kl = str(k).lower()
             if _is_ring_or_wait_key(kl):
                 continue
-            if any(x in kl for x in ("talk", "billsec", "bill_sec", "speak", "connected")):
-                sec = _as_int(v)
-                if "minute" in kl or kl.endswith("min"):
-                    sec *= 60
+            if any(
+                x in kl
+                for x in (
+                    "talk",
+                    "billsec",
+                    "bill_sec",
+                    "billable",
+                    "speak",
+                    "bridge",
+                    "konus",
+                    "sure",
+                )
+            ):
+                sec = _to_seconds(v, key=str(k))
                 if sec > 0:
                     return sec
 
-    # 3) Genel duration (ring değilse)
+    sec = _scan_keys(_DURATION_FALLBACK_KEYS)
+    if sec > 0:
+        return sec
+
     for c in candidates:
-        for key in _DURATION_FALLBACK_KEYS:
-            if _is_ring_or_wait_key(key):
-                continue
-            val = _pick(c, (key,))
-            if val is not None:
-                sec = _as_int(val)
-                if sec > 0:
-                    return sec
+        if not isinstance(c, dict):
+            continue
         for k, v in c.items():
             kl = str(k).lower()
             if _is_ring_or_wait_key(kl):
                 continue
-            if "duration" in kl or kl == "length":
-                sec = _as_int(v)
+            if "duration" in kl or kl in {"length", "len", "seconds"}:
+                sec = _to_seconds(v, key=str(k))
                 if sec > 0:
                     return sec
+
+    # end - start farkı
+    tz = ZoneInfo("Europe/Istanbul")
+    day = date.today()
+    start = _row_datetime(row, tz=tz, default_day=day, require_clock=True)
+    end = None
+    for key in _END_TIME_KEYS:
+        val = _pick(row, (key,))
+        if val is not None:
+            end = _parse_dt(val, tz=tz, default_day=day, require_clock=True)
+            if end:
+                break
+    if start and end and end > start:
+        diff = int((end - start).total_seconds())
+        if 0 < diff < 24 * 3600:
+            return diff
 
     return 0
 
 
-def _parse_dt(value: Any, *, tz: ZoneInfo, default_day: date) -> datetime | None:
+def _parse_dt(
+    value: Any,
+    *,
+    tz: ZoneInfo,
+    default_day: date,
+    require_clock: bool = True,
+) -> datetime | None:
+    """
+    require_clock=True: sadece GÜN içeren (2026-07-26) değerleri reddet.
+    Aksi halde tüm gün 00:00'a düşüp sabah dilimine yanlış girer.
+    """
     if value is None or value == "":
         return None
     if isinstance(value, (int, float)):
-        # epoch sn / ms
         ts = float(value)
         if ts > 1e12:
             ts /= 1000.0
@@ -281,11 +427,22 @@ def _parse_dt(value: Any, *, tz: ZoneInfo, default_day: date) -> datetime | None
         except (OverflowError, OSError, ValueError):
             return None
     if isinstance(value, datetime):
+        # naive midnight from date-only may still appear; allow if not require
         if value.tzinfo is None:
-            return value.replace(tzinfo=tz)
-        return value.astimezone(tz)
+            value = value.replace(tzinfo=tz)
+        else:
+            value = value.astimezone(tz)
+        if require_clock and value.hour == 0 and value.minute == 0 and value.second == 0:
+            # datetime objesinde clock yok sayılabilir; epoch dışı bilinçli 00:00 nadir
+            # string yolundan gelmediyse kabul et (gerçek gece yarısı çağrısı)
+            return value
+        return value
+
     text = str(value).strip()
     if not text:
+        return None
+
+    if require_clock and not _text_has_clock(text):
         return None
 
     # ISO
@@ -321,22 +478,59 @@ def _parse_dt(value: Any, *, tz: ZoneInfo, default_day: date) -> datetime | None
     return None
 
 
-def _row_datetime(row: dict[str, Any], *, tz: ZoneInfo, default_day: date) -> datetime | None:
-    for key in _TIME_KEYS:
-        val = _pick(row, (key,))
-        if val is not None:
-            dt = _parse_dt(val, tz=tz, default_day=default_day)
+def _row_datetime(
+    row: dict[str, Any],
+    *,
+    tz: ZoneInfo,
+    default_day: date,
+    require_clock: bool = True,
+) -> datetime | None:
+    flat = _flatten(row)
+    search_spaces = [row, flat]
+
+    for space in search_spaces:
+        for key in _TIME_KEYS:
+            val = space.get(key)
+            if val is None:
+                val = _pick(space, (key,))
+            if val is not None:
+                dt = _parse_dt(
+                    val, tz=tz, default_day=default_day, require_clock=require_clock
+                )
+                if dt:
+                    return dt
+
+    # date + time ayrı alanlar
+    for space in search_spaces:
+        date_val = None
+        time_val = None
+        for k, v in space.items():
+            kl = str(k).lower().rsplit(".", 1)[-1]
+            if kl in {"date", "calldate", "call_date", "gun", "day"}:
+                date_val = v
+            if kl in {"time", "calltime", "call_time", "saat"}:
+                time_val = v
+        if date_val is not None and time_val is not None:
+            combined = f"{date_val} {time_val}"
+            dt = _parse_dt(combined, tz=tz, default_day=default_day, require_clock=True)
             if dt:
                 return dt
-    # fuzzy
-    for k, v in row.items():
-        kl = str(k).lower()
-        if any(x in kl for x in ("start", "time", "date", "created", "begin", "connect")):
+
+    # fuzzy — çıplak date (clock yok) require_clock ile elenir
+    for space in search_spaces:
+        for k, v in space.items():
+            kl = str(k).lower()
             if _is_ring_or_wait_key(kl):
                 continue
-            dt = _parse_dt(v, tz=tz, default_day=default_day)
-            if dt:
-                return dt
+            if any(
+                x in kl
+                for x in ("start", "time", "created", "begin", "connect", "answer")
+            ):
+                dt = _parse_dt(
+                    v, tz=tz, default_day=default_day, require_clock=require_clock
+                )
+                if dt:
+                    return dt
     return None
 
 
@@ -397,6 +591,7 @@ def aggregate_conversations_window(
         "rows_no_name": 0,
         "rows_no_time": 0,
         "rows_out_of_window": 0,
+        "rows_with_talk": 0,
         "talk_sum": 0,
     }
 
@@ -406,10 +601,9 @@ def aggregate_conversations_window(
             stats["rows_no_name"] += 1
             continue
 
-        dt = _row_datetime(row, tz=tz, default_day=day)
+        # SAAT bilgisiz tarih (sadece gün) → dilime alma (yoksa tüm gün 00:00 sanılır)
+        dt = _row_datetime(row, tz=tz, default_day=day, require_clock=True)
         if dt is None:
-            # Zaman yoksa: dilim filtresi uygulayamayız — atlama daha güvenli
-            # (tam gün yanlış veriyi önlemek için)
             stats["rows_no_time"] += 1
             continue
 
@@ -420,6 +614,8 @@ def aggregate_conversations_window(
         talk = _talk_seconds_from_row(row)
         stats["rows_in_window"] += 1
         stats["talk_sum"] += talk
+        if talk > 0:
+            stats["rows_with_talk"] += 1
 
         if name not in agents:
             agents[name] = AgentStats(name=name, call_count=0, talk_seconds=0)
@@ -427,6 +623,46 @@ def aggregate_conversations_window(
         agents[name].talk_seconds += talk
 
     return list(agents.values()), stats
+
+
+def sample_row_debug(row: dict[str, Any], *, day: date, timezone: str) -> str:
+    """Tek satırdan alan özeti (PII: isim kısaltılır)."""
+    tz = ZoneInfo(timezone)
+    name = _guess_name(row) or "?"
+    safe_name = (name[:2] + "***") if len(name) > 2 else "***"
+    dt = _row_datetime(row, tz=tz, default_day=day, require_clock=True)
+    talk = _talk_seconds_from_row(row)
+    keys = list(row.keys())
+    # süre/zaman adayları + örnek değer (kısaltılmış)
+    interesting = []
+    flat = _flatten(row)
+    for k, v in list(flat.items())[:80]:
+        kl = str(k).lower()
+        if any(
+            x in kl
+            for x in (
+                "time",
+                "date",
+                "dur",
+                "talk",
+                "bill",
+                "sec",
+                "start",
+                "end",
+                "agent",
+                "user",
+                "sure",
+                "konus",
+            )
+        ):
+            vs = str(v)
+            if len(vs) > 40:
+                vs = vs[:40] + "…"
+            interesting.append(f"{k}={vs}")
+    return (
+        f"name={safe_name} dt={dt} talk_sec={talk} "
+        f"keys={keys[:25]} | {interesting[:20]}"
+    )
 
 
 def describe_payload(payload: Any) -> str:
@@ -623,43 +859,27 @@ class TonivaClient:
             logger.info("aggregate: %s", self.last_debug)
 
             if agents:
+                # Konuşma hep 0 ise alan map sorunu — yine de döndür ama kaynağa işaret koy
+                if agg["talk_sum"] == 0 and agg["rows_in_window"] > 0:
+                    logger.warning(
+                        "Dilimde %s çağrı var ama talk_sum=0 — süre alanı eşleşmiyor.",
+                        agg["rows_in_window"],
+                    )
+                    return agents, f"conversations[{period.window_label};talk=0?]"
                 return agents, f"conversations[{period.window_label}]"
 
-            # Hiç satır yoksa empty; satır var ama hepsi dilim dışı / zamansız
             if agg["rows_total"] == 0:
                 return [], "empty"
 
-            if agg["rows_in_window"] == 0 and agg["rows_no_time"] > 0:
-                # Zaman alanı yok — dilim filtresi yapılamadı.
-                # Yine de günün tüm conversations toplamını kullan (uyarı kaynaklı)
-                logger.warning(
-                    "Çağrı zamanı alanı bulunamadı; dilim filtresi atlanıyor (tam gün)."
+            # Saat alanı yoksa tam gün fallback YAPMA — yanlış 779 gibi rakamlar üretir
+            if agg["rows_no_time"] > 0 and agg["rows_in_window"] == 0:
+                raise TonivaApiError(
+                    "Çağrı satırlarında saat bilgisi okunamadı; dilim filtresi uygulanamıyor. "
+                    f"no_time={agg['rows_no_time']} total={agg['rows_total']}. "
+                    "/debug sabah TARIH ile örnek alanları gönderin."
                 )
-                agents_full, _ = aggregate_conversations_window(
-                    rows,
-                    day=day,
-                    cutoff=time(23, 59, 59),
-                    timezone=self.timezone,
-                )
-                # no_time rows were skipped — re-aggregate without time filter
-                agents_full = self._aggregate_ignore_time(rows)
-                if agents_full:
-                    return agents_full, f"conversations[no-time-full-day-fallback]"
 
             return [], "empty"
-
-    def _aggregate_ignore_time(self, rows: list[dict[str, Any]]) -> list[AgentStats]:
-        agents: dict[str, AgentStats] = {}
-        for row in rows:
-            name = _guess_name(row)
-            if not name:
-                continue
-            talk = _talk_seconds_from_row(row)
-            if name not in agents:
-                agents[name] = AgentStats(name=name, call_count=0, talk_seconds=0)
-            agents[name].call_count += 1
-            agents[name].talk_seconds += talk
-        return list(agents.values())
 
     async def debug_reports(self, day: date, period: Period | None = None) -> str:
         if self.mock_mode or not self.api_key:
@@ -673,15 +893,9 @@ class TonivaClient:
         async with httpx.AsyncClient(timeout=90.0) as client:
             rows = await self._fetch_all_conversations(client, day)
             lines.append(f"conversations satır: {len(rows)}")
-            if rows:
-                sample = rows[0]
-                lines.append(f"örnek alanlar: {list(sample.keys())[:40]}")
-                # sample time + talk
-                tz = ZoneInfo(self.timezone)
-                dt = _row_datetime(sample, tz=tz, default_day=day)
-                talk = _talk_seconds_from_row(sample)
-                name = _guess_name(sample)
-                lines.append(f"örnek name={name} time={dt} talk_sec={talk}")
+            for i, sample in enumerate(rows[:3]):
+                lines.append(f"--- satır[{i}] ---")
+                lines.append(sample_row_debug(sample, day=day, timezone=self.timezone))
 
             agents, agg = aggregate_conversations_window(
                 rows, day=day, cutoff=period.cutoff, timezone=self.timezone
